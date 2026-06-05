@@ -640,8 +640,8 @@ export default function Editor({ content: initial, onSave, onContentChange, file
 
   // ── Render ────────────────────────────────────────────────────────────────
   const lspDot =
-    lspStatus === "connected"  ? <span title="TexLab diagnostics active" style={{ color: "var(--ink-success)", fontSize: 10 }}>● LSP</span>
-  : lspStatus === "connecting" ? <span title="Connecting to TexLab…"     style={{ color: "var(--lamp)",        fontSize: 10 }}>◌ LSP</span>
+    lspStatus === "connected"  ? <span title="TexLab diagnostics active" style={{ color: "var(--ink-success)", fontSize: 13 }}>● LSP</span>
+  : lspStatus === "connecting" ? <span title="Connecting to TexLab…"     style={{ color: "var(--lamp)",        fontSize: 13 }}>◌ LSP</span>
   : null;
 
   return (
@@ -649,20 +649,20 @@ export default function Editor({ content: initial, onSave, onContentChange, file
       <div className="editor-toolbar" style={{ height: 36 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {filename && (
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--quill-secondary)" }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 17, color: "var(--quill-secondary)" }}>
               {filename}
             </span>
           )}
           {language !== "plaintext" && (
-            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--quill-muted)" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--quill-muted)" }}>
               {language}
             </span>
           )}
           {(language === "latex" || language === "bibtex") && lspDot}
-          {dirty && <span className="chip chip-warn" style={{ fontSize: 11 }}>unsaved</span>}
+          {dirty && <span className="chip chip-warn" style={{ fontSize: 15 }}>unsaved</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 11, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>⌘S</span>
+          <span style={{ fontSize: 15, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>⌘S</span>
           <button
             className={`btn-sm ${dirty ? "btn-primary" : ""}`}
             onClick={handleSave}
@@ -684,11 +684,11 @@ export default function Editor({ content: initial, onSave, onContentChange, file
           theme="oo-dark"
           options={{
             minimap:                    { enabled: false },
-            fontSize:                   14,  /* 13 * 1.1 */
+            fontSize:                   16,  /* user-managed */
             fontFamily:                 "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
             fontLigatures:              true,
-            lineHeight:                 24,  /* 22 * 1.1 */
-            padding:                    { top: 18, bottom: 18 },
+            lineHeight:                 32,  /* 22 * 1.5 */
+            padding:                    { top: 24, bottom: 24 },
             renderLineHighlight:        "gutter",
             scrollBeyondLastLine:       false,
             wordWrap:                   "on",

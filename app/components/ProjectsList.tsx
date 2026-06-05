@@ -74,15 +74,15 @@ export default function ProjectsList({ onSelect }: { onSelect: (name: string) =>
         <span className="panel-header-label">Projects</span>
         {session ? (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 11, color: "var(--quill-tertiary)", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: "0.75rem", color: "var(--quill-tertiary)", fontFamily: "var(--font-mono)" }}>
               @{session.login}
             </span>
-            <button className="btn-sm" onClick={handleLogout} style={{ fontSize: 11, padding: "2px 7px" }}>
+            <button className="btn-sm" onClick={handleLogout} style={{ fontSize: "0.75rem", padding: "2px 7px" }}>
               Sign out
             </button>
           </div>
         ) : (
-          <button className="btn-sm btn-primary" onClick={handleConnect} style={{ fontSize: 11 }}>
+          <button className="btn-sm btn-primary" onClick={handleConnect} style={{ fontSize: "0.75rem" }}>
             <GitHubIcon />
             Connect
           </button>
@@ -123,10 +123,10 @@ export default function ProjectsList({ onSelect }: { onSelect: (name: string) =>
                     <div className="project-desc">{p.manifest.description}</div>
                   )}
                   <div className="project-meta" style={{ marginTop: 4, gap: 6 }}>
-                    <span className="chip chip-neutral" style={{ fontSize: 10, padding: "1px 5px" }}>
+                    <span className="chip chip-neutral" style={{ fontSize: "0.6875rem", padding: "1px 5px" }}>
                       {p.manifest?.compiler || "xelatex"}
                     </span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--quill-muted)" }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "var(--quill-muted)" }}>
                       {p.manifest?.branch || "main"}
                     </span>
                   </div>
@@ -136,7 +136,7 @@ export default function ProjectsList({ onSelect }: { onSelect: (name: string) =>
           ))
         ) : (
           <div style={{ padding: "20px 16px" }}>
-            <p style={{ fontSize: 13, color: "var(--quill-muted)", lineHeight: 1.6 }}>
+            <p style={{ fontSize: "0.8125rem", color: "var(--quill-muted)", lineHeight: 1.6 }}>
               {session
                 ? "No projects found. Create top-level directories in your repository."
                 : "Sign in to load your projects."}
@@ -147,10 +147,10 @@ export default function ProjectsList({ onSelect }: { onSelect: (name: string) =>
 
       {/* Footer */}
       <div style={{ padding: "10px 16px", borderTop: "1px solid var(--rule-soft)", flexShrink: 0 }}>
-        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--quill-muted)", marginBottom: 4 }}>
+        <div style={{ fontSize: "0.6875rem", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--quill-muted)", marginBottom: 4 }}>
           Storage
         </div>
-        <div style={{ fontSize: 12, color: "var(--quill-tertiary)", lineHeight: 1.5 }}>
+        <div style={{ fontSize: "0.8125rem", color: "var(--quill-tertiary)", lineHeight: 1.5 }}>
           GitHub is source of truth. No external database.
         </div>
       </div>

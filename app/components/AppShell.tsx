@@ -90,15 +90,15 @@ function PdfPanel({
   return (
     <aside className="preview-panel" aria-label="PDF preview" style={{ width, flexShrink: 0 }}>
       {/* Header */}
-      <div className="panel-header" style={{ gap: 6, flexWrap: "nowrap" }}>
+      <div className="panel-header" style={{ gap: 8, flexWrap: "nowrap", padding: "0 14px", minHeight: 55 }}>
         <span className="panel-header-label">PDF Preview</span>
 
         {/* Compile status pill */}
         <span style={{
-          fontSize: 10, fontFamily: "var(--font-mono)", padding: "1px 6px",
-          borderRadius: 4,
+          fontSize: "0.75rem", fontFamily: "var(--font-mono)", padding: "2px 8px",
+          borderRadius: 4, whiteSpace: "nowrap",
           background:
-            compileState === "success" ? "rgba(100,200,100,0.15)"
+            compileState === "success" ? "rgba(100,200,100,0.14)"
           : compileState === "error"   ? "rgba(200,80,80,0.18)"
           : "rgba(200,169,110,0.13)",
           color:
@@ -107,31 +107,53 @@ function PdfPanel({
           : "var(--lamp)",
         }}>
           {spinning ? "⟳ compiling…"
-           : compileState === "success" ? `✓ ok · ${errorCount}e ${warningCount}w`
+           : compileState === "success" ? `✓ ${errorCount}e ${warningCount}w`
            : compileState === "error"   ? `✗ ${errorCount} error${errorCount !== 1 ? "s" : ""}`
            : "auto"}
         </span>
 
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
-          {/* Manual compile */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", flexShrink: 0 }}>
+          {/* Compile button — prominent */}
           <button
-            className="btn-sm btn-ghost"
             onClick={onManualCompile}
             disabled={!project || !mainFile || spinning}
-            title="Force recompile now"
-            style={{ fontSize: 11 }}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 14px",
+              background: spinning ? "rgba(200,169,110,0.08)" : "rgba(200,169,110,0.16)",
+              border: "1px solid rgba(200,169,110,0.4)",
+              borderRadius: "var(--r-sm)",
+              color: "var(--lamp)",
+              fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: "0.8125rem",
+              cursor: !project || !mainFile || spinning ? "not-allowed" : "pointer",
+              opacity: !project || !mainFile ? 0.45 : 1,
+              transition: "background 0.15s ease, opacity 0.15s ease",
+              whiteSpace: "nowrap",
+            }}
           >
-            ⟳
+            <span>{spinning ? "⟳" : "▶"}</span>
+            {spinning ? "Compiling…" : "Compile"}
           </button>
+
           {/* Download */}
           <button
-            className="btn-sm btn-ghost"
             onClick={onDownload}
             disabled={!pdfSrc}
-            title="Download PDF"
-            style={{ fontSize: 11 }}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 12px",
+              background: pdfSrc ? "rgba(78,201,176,0.1)" : "transparent",
+              border: `1px solid ${pdfSrc ? "rgba(78,201,176,0.35)" : "var(--rule-soft)"}`,
+              borderRadius: "var(--r-sm)",
+              color: pdfSrc ? "#4ec9b0" : "var(--quill-muted)",
+              fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: "0.8125rem",
+              cursor: !pdfSrc ? "not-allowed" : "pointer",
+              opacity: !pdfSrc ? 0.45 : 1,
+              transition: "background 0.15s ease, opacity 0.15s ease",
+              whiteSpace: "nowrap",
+            }}
           >
-            ↓ PDF
+            ⬇ PDF
           </button>
         </div>
       </div>
@@ -180,7 +202,7 @@ function PdfPanel({
               borderTopColor: "var(--lamp)",
               animation: "spin 0.7s linear infinite",
             }} />
-            <span style={{ fontSize: 12, color: "#fff", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: "0.8125rem", color: "#fff", fontFamily: "var(--font-mono)" }}>
               {compileState === "syncing" ? "Syncing…" : "Compiling…"}
             </span>
           </div>
@@ -205,16 +227,16 @@ function PdfPanel({
             alignItems: "center",
             gap: 8,
           }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-danger)" }}>
+            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--ink-danger)" }}>
               ✗ Compile errors
             </span>
-            <span style={{ fontSize: 10, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
               scroll to see full log
             </span>
           </div>
           <pre style={{
             flex: 1, overflow: "auto", margin: 0, padding: "8px 10px",
-            fontSize: 10, lineHeight: 1.6,
+            fontSize: "0.6875rem", lineHeight: 1.6,
             fontFamily: "var(--font-mono)", color: "#f87171",
             whiteSpace: "pre-wrap", wordBreak: "break-all",
           }}>
@@ -226,12 +248,12 @@ function PdfPanel({
       {/* Warning log — collapsed, shown on success if warnings > 0 */}
       {compileState === "success" && warningCount > 0 && (
         <details style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, background: "var(--ink-raised)" }}>
-          <summary style={{ padding: "4px 10px", fontSize: 10, cursor: "pointer", color: "var(--lamp)" }}>
+          <summary style={{ padding: "4px 10px", fontSize: "0.6875rem", cursor: "pointer", color: "var(--lamp)" }}>
             {warningCount} warning{warningCount !== 1 ? "s" : ""} — click to expand
           </summary>
           <pre style={{
             margin: 0, padding: "6px 10px", maxHeight: 120, overflow: "auto",
-            fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--lamp)",
+            fontSize: "0.6875rem", fontFamily: "var(--font-mono)", color: "var(--lamp)",
             whiteSpace: "pre-wrap", wordBreak: "break-all",
           }}>
             {compileLog.split("\n").filter((l: string) => l.toLowerCase().includes("warning")).join("\n")}
@@ -272,6 +294,9 @@ export default function AppShell() {
   // Panel widths — start with SSR-safe defaults, sync from localStorage after mount
   const [railWidth,    setRailWidth]    = useState(200);
   const [previewWidth, setPreviewWidth] = useState(280);
+
+  // Mobile tab
+  const [mobileTab, setMobileTab] = useState<"files"|"editor"|"preview">("editor");
 
   // Read persisted values after hydration (avoids SSR mismatch)
   useEffect(() => {
@@ -481,7 +506,7 @@ export default function AppShell() {
               <>
                 <button
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: 13 }}
+                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: "0.8125rem" }}
                 >
                   Projects
                 </button>
@@ -490,7 +515,7 @@ export default function AppShell() {
                 {selectedFile && (
                   <>
                     <span className="breadcrumb-sep">/</span>
-                    <span className="breadcrumb-active mono" style={{ fontSize: 12 }}>
+                    <span className="breadcrumb-active mono" style={{ fontSize: "0.8125rem" }}>
                       {selectedFile.replace(/\//g, " / ")}
                     </span>
                   </>
@@ -511,6 +536,7 @@ export default function AppShell() {
       {/* ── Body — flex row with drag handles ── */}
       <div
         className="app-body"
+        data-tab={mobileTab}
         style={{ display: "flex", gridTemplateColumns: undefined }}
       >
 
@@ -526,11 +552,11 @@ export default function AppShell() {
                 <button
                   className="btn-sm btn-ghost"
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ fontSize: 12, gap: 4 }}
+                  style={{ fontSize: "0.8125rem", gap: 4 }}
                 >
                   ← Projects
                 </button>
-                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
                   {project}
                 </span>
               </div>
@@ -554,7 +580,7 @@ export default function AppShell() {
         <main className="editor-panel" aria-label="Code editor" style={{ flex: 1, minWidth: 0 }}>
           {fileLoading ? (
             <div className="editor-empty" style={{ flex: 1 }}>
-              <span className="serif editor-empty-glyph loading-pulse" style={{ fontSize: 53 }}>…</span>
+              <span className="serif editor-empty-glyph loading-pulse" style={{ fontSize: "0.9375rem" }}>…</span>
               <p className="editor-empty-label">Loading file</p>
             </div>
           ) : selectedFile ? (
@@ -568,7 +594,7 @@ export default function AppShell() {
             />
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>
-              <span className="serif editor-empty-glyph" style={{ fontSize: 70, color: "var(--rule-emphasis)", fontStyle: "italic" }}>
+              <span className="serif editor-empty-glyph" style={{ fontSize: "0.9375rem", color: "var(--rule-emphasis)", fontStyle: "italic" }}>
                 {project ? "λ" : "Ω"}
               </span>
               <p className="editor-empty-label" style={{ maxWidth: 260 }}>
@@ -594,7 +620,7 @@ export default function AppShell() {
                 {selectedFile ?? "Open Overleaf v0.1"}
               </span>
               {mainFile && (
-                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: 10 }}>
+                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: "0.6875rem" }}>
                   ⌖ {mainFile}
                 </span>
               )}
@@ -632,6 +658,41 @@ export default function AppShell() {
           width={previewWidth}
         />
       </div>
+
+      {/* ── Mobile navigation bar ── */}
+      <nav className="mobile-nav" aria-label="Mobile navigation">
+        <button
+          className={`mobile-nav-btn${mobileTab === "files" ? " active" : ""}`}
+          onClick={() => setMobileTab("files")}
+        >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+            <path d="M3 4h4l2 2h8v11H3z"/>
+          </svg>
+          Files
+        </button>
+        <button
+          className={`mobile-nav-btn${mobileTab === "editor" ? " active" : ""}`}
+          onClick={() => setMobileTab("editor")}
+        >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+            <polyline points="4,6 8,10 4,14"/>
+            <line x1="10" y1="14" x2="16" y2="14"/>
+          </svg>
+          Editor
+        </button>
+        <button
+          className={`mobile-nav-btn${mobileTab === "preview" ? " active" : ""}`}
+          onClick={() => { setMobileTab("preview"); }}
+        >
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
+            <rect x="3" y="2" width="14" height="18" rx="1"/>
+            <line x1="6" y1="7"  x2="14" y2="7"/>
+            <line x1="6" y1="10" x2="14" y2="10"/>
+            <line x1="6" y1="13" x2="10" y2="13"/>
+          </svg>
+          Preview
+        </button>
+      </nav>
 
       <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>

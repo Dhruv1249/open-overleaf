@@ -49,7 +49,7 @@ export default function UserStatus() {
           display: "flex",
           alignItems: "center",
           gap: 5,
-          fontSize: 12,
+          fontSize: "0.8125rem",
           color: "var(--quill-tertiary)",
           fontFamily: "var(--font-mono)",
         }}>
@@ -59,7 +59,7 @@ export default function UserStatus() {
         <button
           className="btn-sm"
           onClick={handleLogout}
-          style={{ fontSize: 11, padding: "3px 8px" }}
+          style={{ fontSize: "0.75rem", padding: "3px 8px" }}
         >
           Sign out
         </button>
@@ -72,7 +72,7 @@ export default function UserStatus() {
     <a
       href="/api/auth/github/login"
       className="btn-sm btn-primary"
-      style={{ textDecoration: "none", fontSize: 12 }}
+      style={{ textDecoration: "none", fontSize: "0.8125rem" }}
     >
       <GitHubIcon />
       Connect GitHub
