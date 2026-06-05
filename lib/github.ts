@@ -1,5 +1,10 @@
 import { verifySessionFromRequest } from "./session";
 
+// Encode each path segment individually, preserving forward slashes
+function encodePath(path: string): string {
+  return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+}
+
 async function ghFetch(path: string, req: Request, opts: { method?: string; body?: any } = {}) {
   const session = verifySessionFromRequest(req);
   const token = session?.access_token as string | undefined;
@@ -10,7 +15,11 @@ async function ghFetch(path: string, req: Request, opts: { method?: string; body
   const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
   if (token) headers.Authorization = `token ${token}`;
   if (opts.body) headers["Content-Type"] = "application/json";
-  const resp = await fetch(url, { method: opts.method || "GET", headers, body: opts.body ? JSON.stringify(opts.body) : undefined });
+  const resp = await fetch(url, {
+    method: opts.method || "GET",
+    headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`GitHub API error: ${resp.status} ${text}`);
@@ -21,12 +30,16 @@ async function ghFetch(path: string, req: Request, opts: { method?: string; body
 export async function listTopLevelDirectories(req: Request) {
   const data = await ghFetch(`/contents?ref=${process.env.DEFAULT_BRANCH || "main"}`, req);
   if (!Array.isArray(data)) return [];
-  const dirs = data.filter((item: any) => item.type === "dir").map((d: any) => ({ name: d.name, path: d.path }));
-  return dirs;
+  return data
+    .filter((item: any) => item.type === "dir")
+    .map((d: any) => ({ name: d.name, path: d.path }));
 }
 
 export async function readFileAtPath(path: string, req: Request) {
-  const data = await ghFetch(`/contents/${encodeURIComponent(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`, req);
+  const data = await ghFetch(
+    `/contents/${encodePath(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
+    req
+  );
   if (data && data.content) {
     return Buffer.from(data.content, "base64").toString("utf8");
   }
@@ -34,35 +47,48 @@ export async function readFileAtPath(path: string, req: Request) {
 }
 
 export async function getFileMeta(path: string, req: Request) {
-  const data = await ghFetch(`/contents/${encodeURIComponent(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`, req);
-  return data; // includes .sha and .content
+  const data = await ghFetch(
+    `/contents/${encodePath(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
+    req
+  );
+  return data;
 }
 
 export async function listDirectory(path: string, req: Request) {
-  const data = await ghFetch(`/contents/${encodeURIComponent(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`, req);
+  const data = await ghFetch(
+    `/contents/${encodePath(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
+    req
+  );
   if (!Array.isArray(data)) return [];
   return data.map((item: any) => ({ name: item.name, path: item.path, type: item.type }));
 }
 
-export async function putFileAtPath(path: string, content: string, message: string, req: Request, sha?: string) {
+export async function putFileAtPath(
+  path: string,
+  content: string,
+  message: string,
+  req: Request,
+  sha?: string
+) {
   const body: any = {
     message: message || `Update ${path}`,
     content: Buffer.from(content, "utf8").toString("base64"),
     branch: process.env.DEFAULT_BRANCH || "main",
   };
   if (sha) body.sha = sha;
-  const data = await ghFetch(`/contents/${encodeURIComponent(path)}`, req, { method: "PUT", body });
-  return data;
+  return ghFetch(`/contents/${encodePath(path)}`, req, { method: "PUT", body });
 }
 
-export async function deleteFileAtPath(path: string, message: string, sha: string, req: Request) {
+export async function deleteFileAtPath(
+  path: string,
+  message: string,
+  sha: string,
+  req: Request
+) {
   const body = {
     message: message || `Delete ${path}`,
     sha,
     branch: process.env.DEFAULT_BRANCH || "main",
   };
-  // GitHub DELETE /contents returns 200 with commit info
-  const data = await ghFetch(`/contents/${encodeURIComponent(path)}`, req, { method: "DELETE", body });
-  return data;
+  return ghFetch(`/contents/${encodePath(path)}`, req, { method: "DELETE", body });
 }
-
