@@ -484,12 +484,13 @@ function getOrConnectLsp(project: string): Promise<LspClient | null> {
 type EditorProps = {
   content: string;
   onSave: (newContent: string) => Promise<void>;
+  onContentChange?: (content: string) => void;  // fires on every keystroke
   filename?: string;
   project?: string;
   filePath?: string;
 };
 
-export default function Editor({ content: initial, onSave, filename, project, filePath }: EditorProps) {
+export default function Editor({ content: initial, onSave, onContentChange, filename, project, filePath }: EditorProps) {
   const [value, setValue] = useState(initial || "");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -573,6 +574,7 @@ export default function Editor({ content: initial, onSave, filename, project, fi
     const newVal = v || "";
     setValue(newVal);
     setDirty(newVal !== initial);
+    onContentChange?.(newVal);   // bubble to AppShell for auto-compile
     if (lspRef.current && filePath && project) {
       lspRef.current.sendNotification("textDocument/didChange", {
         textDocument: { uri: fileUri(project, filePath), version: ++docVersion.current },

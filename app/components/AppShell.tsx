@@ -1,71 +1,205 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import ThemeToggle from "./ThemeToggle";
 import UserStatus from "./UserStatus";
 import ProjectsList from "./ProjectsList";
 import ProjectTree from "./ProjectTree";
 import Editor from "./Editor";
 
-type SaveState = "idle" | "saving" | "saved" | "error";
+type SaveState    = "idle" | "saving" | "saved" | "error";
+type CompileState = "idle" | "syncing" | "compiling" | "success" | "error";
 
-// ── PDF placeholder ───────────────────────────────────────────────────────────
-function PdfPanel({ fileOpen }: { fileOpen: boolean }) {
+// ── PDF Preview panel ─────────────────────────────────────────────────────────
+function PdfPanel({
+  project,
+  mainFile,
+  pdfKey,
+  compileState,
+  compileLog,
+  errorCount,
+  warningCount,
+  onManualCompile,
+  onDownload,
+}: {
+  project: string | null;
+  mainFile: string | null;
+  pdfKey: number;
+  compileState: CompileState;
+  compileLog: string;
+  errorCount: number;
+  warningCount: number;
+  onManualCompile: () => void;
+  onDownload: () => void;
+}) {
+  const pdfSrc = project && mainFile && pdfKey > 0
+    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}`
+    : null;
+
+  const spinning = compileState === "syncing" || compileState === "compiling";
+
   return (
     <aside className="preview-panel" aria-label="PDF preview">
-      <div className="panel-header">
+      {/* Header */}
+      <div className="panel-header" style={{ gap: 6, flexWrap: "nowrap" }}>
         <span className="panel-header-label">PDF Preview</span>
-        <span className="chip chip-neutral" style={{ fontSize: 10, padding: "1px 6px" }}>SyncTeX</span>
+
+        {/* Compile status pill */}
+        <span style={{
+          fontSize: 9, fontFamily: "var(--font-mono)", padding: "1px 6px",
+          borderRadius: 4,
+          background:
+            compileState === "success" ? "rgba(100,200,100,0.15)"
+          : compileState === "error"   ? "rgba(200,80,80,0.18)"
+          : "rgba(200,169,110,0.13)",
+          color:
+            compileState === "success" ? "var(--ink-success)"
+          : compileState === "error"   ? "var(--ink-danger)"
+          : "var(--lamp)",
+        }}>
+          {spinning ? "⟳ compiling…"
+           : compileState === "success" ? `✓ ok · ${errorCount}e ${warningCount}w`
+           : compileState === "error"   ? `✗ ${errorCount} error${errorCount !== 1 ? "s" : ""}`
+           : "auto"}
+        </span>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
+          {/* Manual compile */}
+          <button
+            className="btn-sm btn-ghost"
+            onClick={onManualCompile}
+            disabled={!project || !mainFile || spinning}
+            title="Force recompile now"
+            style={{ fontSize: 10 }}
+          >
+            ⟳
+          </button>
+          {/* Download */}
+          <button
+            className="btn-sm btn-ghost"
+            onClick={onDownload}
+            disabled={!pdfSrc}
+            title="Download PDF"
+            style={{ fontSize: 10 }}
+          >
+            ↓ PDF
+          </button>
+        </div>
       </div>
 
-      {fileOpen ? (
-        <div className="preview-viewport">
-          <div className="pdf-page">
-            <div className="pdf-page-inner" style={{ gap: 8 }}>
-              <div className="pdf-line title" />
-              <div className="pdf-line subtitle" />
-              <div style={{ height: 10 }} />
-              {[100, 100, 80, 100, 90, 100, 100, 70, 100, 100, 85, 100, 60].map((w, i) => (
-                <div key={i} className="pdf-line body" style={{ width: `${w}%`, marginTop: 2 }} />
-              ))}
-              <div style={{ height: 8 }} />
-              <div className="pdf-line" style={{ width: "45%", height: 2.5, opacity: 0.7 }} />
-              <div style={{ height: 4 }} />
-              {[100, 100, 90, 75].map((w, i) => (
-                <div key={`b-${i}`} className="pdf-line body" style={{ width: `${w}%`, marginTop: 2 }} />
-              ))}
+      {/* Main area: PDF or placeholder */}
+      <div style={{ flex: 1, position: "relative", minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        {/* PDF iframe — always mounted once we have one, so it doesn't flicker */}
+        {pdfKey > 0 && pdfSrc ? (
+          <iframe
+            key={pdfKey}
+            src={pdfSrc}
+            style={{ width: "100%", flex: 1, border: "none", display: "block", minHeight: 0 }}
+            title="PDF Preview"
+          />
+        ) : (
+          <div className="preview-placeholder" style={{ flex: 1 }}>
+            <div style={{
+              width: "100%", maxWidth: 180, aspectRatio: "210/297",
+              background: "#f8f5ee", borderRadius: "var(--r-xs)",
+              border: "1px solid var(--rule-soft)", boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+              display: "flex", flexDirection: "column", padding: 16, gap: 6, flexShrink: 0,
+            }}>
+              {[62, 44, 0, 100, 100, 80, 100, 90, 100, 65].map((w, i) =>
+                w === 0 ? <div key={i} style={{ height: 8 }} /> :
+                <div key={i} style={{ height: i < 2 ? (i === 0 ? 3 : 2) : 1.5, width: `${w}%`, background: "#2a2520", borderRadius: 1, opacity: i < 2 ? (i === 1 ? 0.5 : 1) : 0.35, marginTop: 2 }} />
+              )}
             </div>
+            <p className="preview-placeholder-text" style={{ maxWidth: 180, marginTop: 12 }}>
+              {project && mainFile
+                ? `Editing ${mainFile} — PDF updates 2s after you stop typing.`
+                : "Open a .tex file to start auto-compiling."}
+            </p>
           </div>
-          <div style={{ fontSize: 10, color: "var(--quill-muted)", fontFamily: "var(--font-mono)", textAlign: "center" }}>
-            Page 1 · Awaiting compile
-          </div>
-        </div>
-      ) : (
-        <div className="preview-placeholder">
+        )}
+
+        {/* Spinning overlay while compiling */}
+        {spinning && (
           <div style={{
-            width: "100%", maxWidth: 200, aspectRatio: "210/297",
-            background: "#f8f5ee", borderRadius: "var(--r-xs)",
-            border: "1px solid var(--rule-soft)", boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
-            display: "flex", flexDirection: "column", padding: 18, gap: 7, flexShrink: 0,
+            position: "absolute", inset: 0, background: "rgba(0,0,0,0.28)",
+            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+            gap: 10, backdropFilter: "blur(1px)", zIndex: 10, pointerEvents: "none",
           }}>
-            <div style={{ height: 3, width: "62%", background: "#2a2520", borderRadius: 1 }} />
-            <div style={{ height: 2, width: "44%", background: "#2a2520", borderRadius: 1, opacity: 0.5 }} />
-            <div style={{ height: 10 }} />
-            {[100, 100, 80, 100, 90, 100, 65].map((w, i) => (
-              <div key={i} style={{ height: 1.5, width: `${w}%`, background: "#2a2520", borderRadius: 1, opacity: 0.35, marginTop: 2 }} />
-            ))}
+            <div style={{
+              width: 34, height: 34, borderRadius: "50%",
+              border: "3px solid rgba(200,169,110,0.25)",
+              borderTopColor: "var(--lamp)",
+              animation: "spin 0.7s linear infinite",
+            }} />
+            <span style={{ fontSize: 11, color: "#fff", fontFamily: "var(--font-mono)" }}>
+              {compileState === "syncing" ? "Syncing…" : "Compiling…"}
+            </span>
           </div>
-          <p className="preview-placeholder-text" style={{ maxWidth: 160 }}>
-            Compile a .tex file to render the PDF here.
-          </p>
+        )}
+      </div>
+
+      {/* Error/Log panel — shown automatically on error, no button click needed */}
+      {compileState === "error" && compileLog && (
+        <div style={{
+          borderTop: "2px solid var(--ink-danger)",
+          background: "rgba(180,40,40,0.07)",
+          flexShrink: 0,
+          maxHeight: 220,
+          display: "flex",
+          flexDirection: "column",
+        }}>
+          <div style={{
+            padding: "5px 10px",
+            borderBottom: "1px solid rgba(180,40,40,0.2)",
+            flexShrink: 0,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+          }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "var(--ink-danger)" }}>
+              ✗ Compile errors
+            </span>
+            <span style={{ fontSize: 9, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
+              scroll to see full log
+            </span>
+          </div>
+          <pre style={{
+            flex: 1, overflow: "auto", margin: 0, padding: "8px 10px",
+            fontSize: 9, lineHeight: 1.6,
+            fontFamily: "var(--font-mono)", color: "#f87171",
+            whiteSpace: "pre-wrap", wordBreak: "break-all",
+          }}>
+            {compileLog}
+          </pre>
         </div>
       )}
 
+      {/* Warning log — collapsed, shown on success if warnings > 0 */}
+      {compileState === "success" && warningCount > 0 && (
+        <details style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, background: "var(--ink-raised)" }}>
+          <summary style={{ padding: "4px 10px", fontSize: 9, cursor: "pointer", color: "var(--lamp)" }}>
+            {warningCount} warning{warningCount !== 1 ? "s" : ""} — click to expand
+          </summary>
+          <pre style={{
+            margin: 0, padding: "6px 10px", maxHeight: 120, overflow: "auto",
+            fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--lamp)",
+            whiteSpace: "pre-wrap", wordBreak: "break-all",
+          }}>
+            {compileLog.split("\n").filter((l: string) => l.toLowerCase().includes("warning")).join("\n")}
+          </pre>
+        </details>
+      )}
+
+      {/* Footer */}
       <div style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0 }}>
-        <div className="info-row"><span className="info-label">Compiler</span><span className="info-value">xelatex</span></div>
-        <div className="info-row"><span className="info-label">Bibliography</span><span className="info-value">biber</span></div>
-        <div className="info-row"><span className="info-label">Debounce</span><span className="info-value">2 000 ms</span></div>
-        <div className="info-row" style={{ borderBottom: "none" }}><span className="info-label">Backup</span><span className="info-value">Google Drive</span></div>
+        <div className="info-row">
+          <span className="info-label">Auto-compile</span>
+          <span className="info-value">2s after typing stops</span>
+        </div>
+        <div className="info-row" style={{ borderBottom: "none" }}>
+          <span className="info-label">Engine</span>
+          <span className="info-value">pdflatex / xelatex</span>
+        </div>
       </div>
     </aside>
   );
@@ -73,13 +207,125 @@ function PdfPanel({ fileOpen }: { fileOpen: boolean }) {
 
 // ── AppShell ──────────────────────────────────────────────────────────────────
 export default function AppShell() {
-  const [project, setProject] = useState<string | null>(null);
+  const [project,      setProject]      = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState("");
-  const [fileLoading, setFileLoading] = useState(false);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [fileContent,  setFileContent]  = useState("");
+  const [fileLoading,  setFileLoading]  = useState(false);
+  const [saveState,    setSaveState]    = useState<SaveState>("idle");
 
-  // ── Select a project ──────────────────────────────────────────────────────
+  const [compileState,  setCompileState]  = useState<CompileState>("idle");
+  const [compileLog,    setCompileLog]    = useState("");
+  const [errorCount,    setErrorCount]    = useState(0);
+  const [warningCount,  setWarningCount]  = useState(0);
+  const [pdfKey,        setPdfKey]        = useState(0);
+  const [mainFile,      setMainFile]      = useState<string | null>(null);
+
+  // Refs that survive re-renders for use in callbacks
+  const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentContent   = useRef<string>("");        // latest editor content (possibly unsaved)
+  const currentFile      = useRef<string | null>(null);
+  const currentProject   = useRef<string | null>(null);
+  const currentMainFile  = useRef<string | null>(null);
+
+  // Keep refs in sync
+  useEffect(() => { currentProject.current  = project;  }, [project]);
+  useEffect(() => { currentFile.current     = selectedFile; }, [selectedFile]);
+  useEffect(() => { currentMainFile.current = mainFile; }, [mainFile]);
+
+  // Reset compile state when project changes
+  useEffect(() => {
+    setMainFile(null);
+    setCompileState("idle");
+    setCompileLog("");
+    setErrorCount(0);
+    setWarningCount(0);
+    setPdfKey(0);
+    currentContent.current = "";
+  }, [project]);
+
+  // ── Core compile function ─────────────────────────────────────────────────
+  const compile = useCallback(async (
+    projectName: string,
+    mf: string,
+    overrides: { path: string; content: string }[] = [],
+  ) => {
+    setCompileState("syncing");
+    setCompileLog("");
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/compile`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mainFile: mf, engine: "auto", overrides }),
+      });
+      const data = await res.json();
+
+      // Always expose the full log — no hiding
+      const fullLog = [
+        data.log || "",
+        data.error && !data.log?.includes(data.error) ? `\n[API error] ${data.error}` : "",
+      ].filter(Boolean).join("");
+      setCompileLog(fullLog);
+
+      if (data.ok) {
+        setCompileState("success");
+        setErrorCount(data.errors   ?? 0);
+        setWarningCount(data.warnings ?? 0);
+        setPdfKey(k => k + 1);
+      } else {
+        setCompileState("error");
+        // errorCount from parsed log; fallback to 1 if API couldn't parse
+        setErrorCount(
+          Array.isArray(data.errors) ? data.errors.length
+          : typeof data.errors === "number" ? data.errors
+          : 1
+        );
+        setWarningCount(0);
+      }
+    } catch (e: any) {
+      setCompileState("error");
+      setCompileLog(`Network / server error:\n${e.message}`);
+      setErrorCount(1);
+    }
+  }, []);
+
+  // ── Auto-compile: fires 2s after typing stops ─────────────────────────────
+  const scheduleAutoCompile = useCallback(() => {
+    if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
+    autoCompileTimer.current = setTimeout(() => {
+      const proj = currentProject.current;
+      const file = currentFile.current;   // always compile the file that's open
+      if (!proj || !file || !file.endsWith(".tex")) return;
+      // Send current unsaved content as an override so we compile what's on screen
+      compile(proj, file, [{ path: file, content: currentContent.current }]);
+    }, 2000);
+  }, [compile]);
+
+  // ── Manual compile (force, no debounce) ──────────────────────────────────
+  const handleManualCompile = useCallback(() => {
+    if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
+    const proj = currentProject.current;
+    const mf   = currentMainFile.current;
+    const file = currentFile.current;
+    if (!proj || !mf) return;
+    compile(proj, mf, file ? [{ path: file, content: currentContent.current }] : []);
+  }, [compile]);
+
+  // ── Content change (every keystroke) ─────────────────────────────────────
+  const handleContentChange = useCallback((content: string) => {
+    currentContent.current = content;
+    scheduleAutoCompile();
+  }, [scheduleAutoCompile]);
+
+  // ── Download ──────────────────────────────────────────────────────────────
+  const handleDownload = useCallback(() => {
+    if (!project || !mainFile || pdfKey === 0) return;
+    const a = document.createElement("a");
+    a.href = `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&download=1&t=${pdfKey}`;
+    a.download = mainFile.replace(/\.tex$/, ".pdf");
+    a.click();
+  }, [project, mainFile, pdfKey]);
+
+  // ── Project select ────────────────────────────────────────────────────────
   const handleSelectProject = useCallback((name: string) => {
     setProject(name);
     setSelectedFile(null);
@@ -87,35 +333,44 @@ export default function AppShell() {
     setSaveState("idle");
   }, []);
 
-  // ── Open a file ───────────────────────────────────────────────────────────
-  const handleSelectFile = useCallback(async (path: string) => {
+  // ── File open ─────────────────────────────────────────────────────────────
+  const handleSelectFile = useCallback(async (filePath: string) => {
     if (!project) return;
-    // Ignore directory clicks that bubble up
-    setSelectedFile(path);
+    // Clear auto-compile timer from previous file
+    if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
+
+    setSelectedFile(filePath);
     setFileLoading(true);
     setFileContent("");
+    currentContent.current = "";
+
+    // Always use the opened .tex file as the compile target
+    if (filePath.endsWith(".tex")) {
+      setMainFile(filePath);
+      currentMainFile.current = filePath;
+    }
+
     try {
       const res = await fetch(
-        `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(path)}`
+        `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(filePath)}`
       );
       const data = await res.json();
-      // 404 means the file is new/empty — open a blank editor
-      if (data.ok) {
-        setFileContent(data.content ?? "");
-      } else if (res.status === 404 || data.error === "not found") {
-        setFileContent(""); // empty file — ready to type
-      } else {
-        console.error("File load error:", data.error);
-        setFileContent("");
+      const content = data.ok ? (data.content ?? "") : "";
+      setFileContent(content);
+      currentContent.current = content;
+
+      // Auto-compile immediately on file open (if it's a .tex file)
+      if (filePath.endsWith(".tex") && project) {
+        compile(project, filePath, [{ path: filePath, content }]);
       }
     } catch (e) {
       console.error(e);
     } finally {
       setFileLoading(false);
     }
-  }, [project]);
+  }, [project, compile]);
 
-  // ── Save a file ───────────────────────────────────────────────────────────
+  // ── Save ──────────────────────────────────────────────────────────────────
   const handleSaveFile = useCallback(async (newContent: string) => {
     if (!project || !selectedFile) return;
     setSaveState("saving");
@@ -123,11 +378,7 @@ export default function AppShell() {
       const res = await fetch(`/api/projects/${encodeURIComponent(project)}/file`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          path: selectedFile,
-          content: newContent,
-          message: `Edit ${selectedFile}`,
-        }),
+        body: JSON.stringify({ path: selectedFile, content: newContent, message: `Edit ${selectedFile}` }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -150,24 +401,19 @@ export default function AppShell() {
     <div className="app-shell">
       {/* ── Titlebar ── */}
       <header className="app-titlebar">
-        {/* Wordmark */}
         <div className="wordmark">
           <div className="wordmark-logo">Ω</div>
           <div className="wordmark-text">Open Overleaf</div>
           <span className="wordmark-tag" style={{ marginLeft: 4 }}>GitHub-backed LaTeX</span>
         </div>
 
-        {/* Breadcrumb */}
         <div className="titlebar-center">
           <nav className="breadcrumb" aria-label="Navigation">
             {project ? (
               <>
                 <button
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{
-                    background: "none", border: "none", padding: 0, cursor: "pointer",
-                    color: "var(--quill-tertiary)", fontSize: 12,
-                  }}
+                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: 12 }}
                 >
                   Projects
                 </button>
@@ -188,7 +434,6 @@ export default function AppShell() {
           </nav>
         </div>
 
-        {/* Controls */}
         <div className="titlebar-right">
           <ThemeToggle />
           <UserStatus />
@@ -201,7 +446,6 @@ export default function AppShell() {
         {/* ── Left rail ── */}
         <aside className="rail-panel" aria-label="File explorer">
           {project ? (
-            // File tree for current project
             <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
               <div className="panel-header">
                 <button
@@ -211,12 +455,7 @@ export default function AppShell() {
                 >
                   ← Projects
                 </button>
-                <span style={{
-                  fontSize: 11, fontWeight: 600,
-                  color: "var(--quill-secondary)",
-                  fontFamily: "var(--font-mono)",
-                  maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis",
-                }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
                   {project}
                 </span>
               </div>
@@ -229,7 +468,6 @@ export default function AppShell() {
               </div>
             </div>
           ) : (
-            // Project list
             <ProjectsList onSelect={handleSelectProject} />
           )}
         </aside>
@@ -245,6 +483,7 @@ export default function AppShell() {
             <Editor
               content={fileContent}
               onSave={handleSaveFile}
+              onContentChange={handleContentChange}
               filename={filename}
               project={project ?? undefined}
               filePath={selectedFile ?? undefined}
@@ -257,12 +496,12 @@ export default function AppShell() {
               <p className="editor-empty-label" style={{ maxWidth: 260 }}>
                 {project
                   ? "Select a file from the explorer to start editing."
-                  : "Select a project from the left panel. Connect GitHub first to load repositories."}
+                  : "Select a project from the left panel."}
               </p>
               {!project && (
                 <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap", justifyContent: "center" }}>
                   <span className="chip chip-neutral">Monaco</span>
-                  <span className="chip chip-neutral">SyncTeX</span>
+                  <span className="chip chip-neutral">Live compile</span>
                   <span className="chip chip-neutral">TexLab LSP</span>
                   <span className="chip chip-neutral">PDF preview</span>
                 </div>
@@ -274,29 +513,45 @@ export default function AppShell() {
           <div className="status-bar">
             <div className="status-left">
               <span className="status-item mono">
-                {selectedFile ? selectedFile : "Open Overleaf v0.1"}
+                {selectedFile ?? "Open Overleaf v0.1"}
               </span>
+              {mainFile && (
+                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: 9 }}>
+                  ⌖ {mainFile}
+                </span>
+              )}
             </div>
             <div className="status-right">
               <span className="status-item" style={{
                 color: saveState === "saved" ? "var(--ink-success)"
-                  : saveState === "saving" ? "var(--lamp)"
-                  : saveState === "error" ? "var(--ink-danger)"
+                  : saveState === "saving"   ? "var(--lamp)"
+                  : saveState === "error"    ? "var(--ink-danger)"
                   : "var(--quill-muted)"
               }}>
                 {saveState === "saving" ? "⟳ Saving…"
-                  : saveState === "saved" ? "✓ Saved to GitHub"
-                  : saveState === "error" ? "✗ Save failed"
-                  : "xelatex · biber"}
+                  : saveState === "saved"  ? "✓ Saved"
+                  : saveState === "error"  ? "✗ Save failed"
+                  : "UTF-8"}
               </span>
-              <span className="status-item">UTF-8</span>
             </div>
           </div>
         </main>
 
         {/* ── PDF Preview ── */}
-        <PdfPanel fileOpen={!!selectedFile} />
+        <PdfPanel
+          project={project}
+          mainFile={mainFile}
+          pdfKey={pdfKey}
+          compileState={compileState}
+          compileLog={compileLog}
+          errorCount={errorCount}
+          warningCount={warningCount}
+          onManualCompile={handleManualCompile}
+          onDownload={handleDownload}
+        />
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }
