@@ -99,10 +99,14 @@ export default function AppShell() {
         `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(path)}`
       );
       const data = await res.json();
+      // 404 means the file is new/empty — open a blank editor
       if (data.ok) {
-        setFileContent(data.content);
+        setFileContent(data.content ?? "");
+      } else if (res.status === 404 || data.error === "not found") {
+        setFileContent(""); // empty file — ready to type
       } else {
         console.error("File load error:", data.error);
+        setFileContent("");
       }
     } catch (e) {
       console.error(e);
@@ -242,6 +246,8 @@ export default function AppShell() {
               content={fileContent}
               onSave={handleSaveFile}
               filename={filename}
+              project={project ?? undefined}
+              filePath={selectedFile ?? undefined}
             />
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>

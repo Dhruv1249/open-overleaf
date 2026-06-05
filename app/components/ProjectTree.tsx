@@ -308,7 +308,9 @@ function TreeItem({
       </div>
 
       {/* Children (if expanded) */}
-      {isDir && isExpanded && children && children.map((child) => (
+      {isDir && isExpanded && children && children
+        .filter((child) => child.name !== ".gitkeep")
+        .map((child) => (
         <TreeItem
           key={child.path}
           entry={child}
@@ -526,13 +528,34 @@ export default function ProjectTree({
     setWorking(true);
     setOpError(null);
     try {
+      // Pass ?type=dir for folders so the API does recursive deletion
+      const typeParam = entry.type === "dir" ? "&type=dir" : "&type=file";
       const res = await fetch(
-        `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(entry.path)}`,
+        `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(entry.path)}${typeParam}`,
         { method: "DELETE" }
       );
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed");
       setDialog(null);
+
+      // Remove deleted path (and all descendants) from expanded/cached state
+      // so the tree doesn't try to re-fetch a now-deleted folder
+      const deletedPath = entry.path;
+      setExpandedDirs((prev) => {
+        const next = new Set(prev);
+        for (const p of prev) {
+          if (p === deletedPath || p.startsWith(deletedPath + "/")) next.delete(p);
+        }
+        return next;
+      });
+      setDirContents((prev) => {
+        const next = new Map(prev);
+        for (const p of prev.keys()) {
+          if (p === deletedPath || p.startsWith(deletedPath + "/")) next.delete(p);
+        }
+        return next;
+      });
+
       await refreshTree();
     } catch (e: any) {
       setOpError(e.message);
@@ -565,10 +588,21 @@ export default function ProjectTree({
   }, [dialog, inputValue, project, refreshTree]);
 
   // ── Render ──────────────────────────────────────────────────────────────────
+  // Guard: don't open directories as files
+  const handleSelectFile = useCallback((path: string) => {
+    const allEntries = [
+      ...(rootEntries || []),
+      ...Array.from(dirContents.values()).flat(),
+    ];
+    const entry = allEntries.find(e => e.path === path);
+    if (entry?.type === "dir") return;
+    onSelect(path);
+  }, [rootEntries, dirContents, onSelect]);
+
   const treeItemProps = {
     project, expandedDirs, dirContents, loadingDirs, selectedFile, inlineRename,
     onToggleDir: handleToggleDir,
-    onSelectFile: onSelect,
+    onSelectFile: handleSelectFile,
     onContextMenu: handleContextMenu,
     onInlineRenameChange: (v: string) => setInlineRename((r) => r ? { ...r, value: v } : null),
     onInlineRenameSubmit: submitInlineRename,
@@ -592,9 +626,11 @@ export default function ProjectTree({
           Empty project
         </div>
       ) : (
-        rootEntries.map((entry) => (
-          <TreeItem key={entry.path} entry={entry} depth={0} {...treeItemProps} />
-        ))
+        rootEntries
+          .filter((e) => e.name !== ".gitkeep")
+          .map((entry) => (
+            <TreeItem key={entry.path} entry={entry} depth={0} {...treeItemProps} />
+          ))
       )}
 
       {/* ── Bottom toolbar: New File / New Folder ── */}
@@ -660,7 +696,7 @@ export default function ProjectTree({
             onChange={setInputValue}
             placeholder={(dialog as any).isFolder ? "folder-name" : "filename.tex"}
             onSubmit={handleCreate}
-            hint={(dialog as any).parentPath ? `Inside: ${(dialog as any).parentPath}/` : "At project root"}
+            hint={(dialog as any).parentPath ? `Inside: ${(dialog as any).parentPath}/` : ""}
           />
           {opError && <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-danger)" }}>{opError}</div>}
           <ModalActions
@@ -676,9 +712,10 @@ export default function ProjectTree({
       {dialog?.type === "delete" && (
         <Modal title={`Delete "${dialog.entry.name}"`} onClose={() => setDialog(null)}>
           <p style={{ fontSize: 12, color: "var(--quill-secondary)", lineHeight: 1.6 }}>
-            This permanently deletes this{" "}
-            {dialog.entry.type === "dir" ? "folder and all its contents" : "file"}{" "}
-            from GitHub. This cannot be undone.
+            {dialog.entry.type === "dir"
+              ? <>This will <strong>recursively delete</strong> all files inside <code>{dialog.entry.name}</code> from GitHub. This cannot be undone.</>
+              : <>This permanently deletes <code>{dialog.entry.name}</code> from GitHub. This cannot be undone.</>
+            }
           </p>
           {opError && <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-danger)" }}>{opError}</div>}
           <ModalActions

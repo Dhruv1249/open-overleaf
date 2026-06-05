@@ -40,7 +40,8 @@ export async function readFileAtPath(path: string, req: Request) {
     `/contents/${encodePath(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
     req
   );
-  if (data && data.content) {
+  // data.content is a base64 string. Empty files have content === "" (falsy but valid).
+  if (data && data.content != null) {
     return Buffer.from(data.content, "base64").toString("utf8");
   }
   return null;
@@ -92,3 +93,44 @@ export async function deleteFileAtPath(
   };
   return ghFetch(`/contents/${encodePath(path)}`, req, { method: "DELETE", body });
 }
+
+/**
+ * Recursively collect all file paths + SHAs inside a GitHub directory.
+ * dirPath is the repo-root-relative path (e.g. "myproject/chapters").
+ */
+export async function listAllFilesInDir(
+  dirPath: string,
+  req: Request
+): Promise<Array<{ path: string; sha: string }>> {
+  const entries = await listDirectory(dirPath, req);
+  const results: Array<{ path: string; sha: string }> = [];
+  for (const entry of entries) {
+    if (entry.type === "file") {
+      // entry.path is the full repo-relative path returned by GitHub
+      const meta = await ghFetch(
+        `/contents/${encodePath(entry.path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
+        req
+      );
+      results.push({ path: entry.path, sha: meta.sha });
+    } else if (entry.type === "dir") {
+      const sub = await listAllFilesInDir(entry.path, req);
+      results.push(...sub);
+    }
+  }
+  return results;
+}
+
+/**
+ * Delete an entire directory by recursively deleting every file inside it.
+ * GitHub has no directory-delete API; directories vanish once empty.
+ */
+export async function deleteDirectoryAtPath(
+  dirPath: string,
+  req: Request
+): Promise<void> {
+  const files = await listAllFilesInDir(dirPath, req);
+  for (const { path, sha } of files) {
+    await deleteFileAtPath(path, `Delete ${path}`, sha, req);
+  }
+}
+
