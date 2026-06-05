@@ -95,7 +95,7 @@ function PdfPanel({
 
         {/* Compile status pill */}
         <span style={{
-          fontSize: 11, fontFamily: "var(--font-mono)", padding: "1px 6px",
+          fontSize: 10, fontFamily: "var(--font-mono)", padding: "1px 6px",
           borderRadius: 4,
           background:
             compileState === "success" ? "rgba(100,200,100,0.15)"
@@ -119,7 +119,7 @@ function PdfPanel({
             onClick={onManualCompile}
             disabled={!project || !mainFile || spinning}
             title="Force recompile now"
-            style={{ fontSize: 13 }}
+            style={{ fontSize: 11 }}
           >
             ⟳
           </button>
@@ -129,7 +129,7 @@ function PdfPanel({
             onClick={onDownload}
             disabled={!pdfSrc}
             title="Download PDF"
-            style={{ fontSize: 13 }}
+            style={{ fontSize: 11 }}
           >
             ↓ PDF
           </button>
@@ -180,7 +180,7 @@ function PdfPanel({
               borderTopColor: "var(--lamp)",
               animation: "spin 0.7s linear infinite",
             }} />
-            <span style={{ fontSize: 14, color: "#fff", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: 12, color: "#fff", fontFamily: "var(--font-mono)" }}>
               {compileState === "syncing" ? "Syncing…" : "Compiling…"}
             </span>
           </div>
@@ -205,16 +205,16 @@ function PdfPanel({
             alignItems: "center",
             gap: 8,
           }}>
-            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-danger)" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "var(--ink-danger)" }}>
               ✗ Compile errors
             </span>
-            <span style={{ fontSize: 11, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: 10, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
               scroll to see full log
             </span>
           </div>
           <pre style={{
             flex: 1, overflow: "auto", margin: 0, padding: "8px 10px",
-            fontSize: 11, lineHeight: 1.6,
+            fontSize: 10, lineHeight: 1.6,
             fontFamily: "var(--font-mono)", color: "#f87171",
             whiteSpace: "pre-wrap", wordBreak: "break-all",
           }}>
@@ -226,12 +226,12 @@ function PdfPanel({
       {/* Warning log — collapsed, shown on success if warnings > 0 */}
       {compileState === "success" && warningCount > 0 && (
         <details style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, background: "var(--ink-raised)" }}>
-          <summary style={{ padding: "4px 10px", fontSize: 11, cursor: "pointer", color: "var(--lamp)" }}>
+          <summary style={{ padding: "4px 10px", fontSize: 10, cursor: "pointer", color: "var(--lamp)" }}>
             {warningCount} warning{warningCount !== 1 ? "s" : ""} — click to expand
           </summary>
           <pre style={{
             margin: 0, padding: "6px 10px", maxHeight: 120, overflow: "auto",
-            fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--lamp)",
+            fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--lamp)",
             whiteSpace: "pre-wrap", wordBreak: "break-all",
           }}>
             {compileLog.split("\n").filter((l: string) => l.toLowerCase().includes("warning")).join("\n")}
@@ -481,7 +481,7 @@ export default function AppShell() {
               <>
                 <button
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: 15 }}
+                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: 13 }}
                 >
                   Projects
                 </button>
@@ -490,7 +490,7 @@ export default function AppShell() {
                 {selectedFile && (
                   <>
                     <span className="breadcrumb-sep">/</span>
-                    <span className="breadcrumb-active mono" style={{ fontSize: 14 }}>
+                    <span className="breadcrumb-active mono" style={{ fontSize: 12 }}>
                       {selectedFile.replace(/\//g, " / ")}
                     </span>
                   </>
@@ -526,11 +526,11 @@ export default function AppShell() {
                 <button
                   className="btn-sm btn-ghost"
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ fontSize: 14, gap: 4 }}
+                  style={{ fontSize: 12, gap: 4 }}
                 >
                   ← Projects
                 </button>
-                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
                   {project}
                 </span>
               </div>
@@ -554,7 +554,7 @@ export default function AppShell() {
         <main className="editor-panel" aria-label="Code editor" style={{ flex: 1, minWidth: 0 }}>
           {fileLoading ? (
             <div className="editor-empty" style={{ flex: 1 }}>
-              <span className="serif editor-empty-glyph loading-pulse" style={{ fontSize: 60 }}>…</span>
+              <span className="serif editor-empty-glyph loading-pulse" style={{ fontSize: 53 }}>…</span>
               <p className="editor-empty-label">Loading file</p>
             </div>
           ) : selectedFile ? (
@@ -568,7 +568,7 @@ export default function AppShell() {
             />
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>
-              <span className="serif editor-empty-glyph" style={{ fontSize: 80, color: "var(--rule-emphasis)", fontStyle: "italic" }}>
+              <span className="serif editor-empty-glyph" style={{ fontSize: 70, color: "var(--rule-emphasis)", fontStyle: "italic" }}>
                 {project ? "λ" : "Ω"}
               </span>
               <p className="editor-empty-label" style={{ maxWidth: 260 }}>
@@ -594,7 +594,7 @@ export default function AppShell() {
                 {selectedFile ?? "Open Overleaf v0.1"}
               </span>
               {mainFile && (
-                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: 11 }}>
+                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: 10 }}>
                   ⌖ {mainFile}
                 </span>
               )}
