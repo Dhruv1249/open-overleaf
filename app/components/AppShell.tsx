@@ -7,8 +7,55 @@ import ProjectsList from "./ProjectsList";
 import ProjectTree from "./ProjectTree";
 import Editor from "./Editor";
 
+// ── Drag handle between panels ────────────────────────────────────────────────
+function DragHandle({ onDrag }: { onDrag: (dx: number) => void }) {
+  const [active, setActive] = useState(false);
+  const lastX = useRef(0);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    lastX.current = e.clientX;
+    setActive(true);
+
+    // ── Transparent overlay: sits above iframes so mouse events stay in main document ──
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:99999;cursor:col-resize;background:transparent;";
+    document.body.appendChild(overlay);
+    document.body.style.userSelect = "none";
+
+    const onMove = (ev: MouseEvent) => {
+      const dx = ev.clientX - lastX.current;
+      lastX.current = ev.clientX;
+      onDrag(dx);
+    };
+    const onUp = () => {
+      setActive(false);
+      overlay.remove();
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup",   onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup",   onUp);
+  }, [onDrag]);
+
+  return (
+    <div
+      className={`drag-handle${active ? " drag-active" : ""}`}
+      onMouseDown={onMouseDown}
+    />
+  );
+}
+
+function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
+
 type SaveState    = "idle" | "saving" | "saved" | "error";
 type CompileState = "idle" | "syncing" | "compiling" | "success" | "error";
+
+const RAIL_KEY    = "oo-rail-width";
+const PREVIEW_KEY = "oo-preview-width";
+
 
 // ── PDF Preview panel ─────────────────────────────────────────────────────────
 function PdfPanel({
@@ -21,6 +68,7 @@ function PdfPanel({
   warningCount,
   onManualCompile,
   onDownload,
+  width,
 }: {
   project: string | null;
   mainFile: string | null;
@@ -31,6 +79,7 @@ function PdfPanel({
   warningCount: number;
   onManualCompile: () => void;
   onDownload: () => void;
+  width: number;
 }) {
   const pdfSrc = project && mainFile && pdfKey > 0
     ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}`
@@ -39,14 +88,14 @@ function PdfPanel({
   const spinning = compileState === "syncing" || compileState === "compiling";
 
   return (
-    <aside className="preview-panel" aria-label="PDF preview">
+    <aside className="preview-panel" aria-label="PDF preview" style={{ width, flexShrink: 0 }}>
       {/* Header */}
       <div className="panel-header" style={{ gap: 6, flexWrap: "nowrap" }}>
         <span className="panel-header-label">PDF Preview</span>
 
         {/* Compile status pill */}
         <span style={{
-          fontSize: 9, fontFamily: "var(--font-mono)", padding: "1px 6px",
+          fontSize: 11, fontFamily: "var(--font-mono)", padding: "1px 6px",
           borderRadius: 4,
           background:
             compileState === "success" ? "rgba(100,200,100,0.15)"
@@ -70,7 +119,7 @@ function PdfPanel({
             onClick={onManualCompile}
             disabled={!project || !mainFile || spinning}
             title="Force recompile now"
-            style={{ fontSize: 10 }}
+            style={{ fontSize: 13 }}
           >
             ⟳
           </button>
@@ -80,7 +129,7 @@ function PdfPanel({
             onClick={onDownload}
             disabled={!pdfSrc}
             title="Download PDF"
-            style={{ fontSize: 10 }}
+            style={{ fontSize: 13 }}
           >
             ↓ PDF
           </button>
@@ -131,7 +180,7 @@ function PdfPanel({
               borderTopColor: "var(--lamp)",
               animation: "spin 0.7s linear infinite",
             }} />
-            <span style={{ fontSize: 11, color: "#fff", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: 14, color: "#fff", fontFamily: "var(--font-mono)" }}>
               {compileState === "syncing" ? "Syncing…" : "Compiling…"}
             </span>
           </div>
@@ -156,16 +205,16 @@ function PdfPanel({
             alignItems: "center",
             gap: 8,
           }}>
-            <span style={{ fontSize: 10, fontWeight: 700, color: "var(--ink-danger)" }}>
+            <span style={{ fontSize: 13, fontWeight: 700, color: "var(--ink-danger)" }}>
               ✗ Compile errors
             </span>
-            <span style={{ fontSize: 9, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
+            <span style={{ fontSize: 11, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
               scroll to see full log
             </span>
           </div>
           <pre style={{
             flex: 1, overflow: "auto", margin: 0, padding: "8px 10px",
-            fontSize: 9, lineHeight: 1.6,
+            fontSize: 11, lineHeight: 1.6,
             fontFamily: "var(--font-mono)", color: "#f87171",
             whiteSpace: "pre-wrap", wordBreak: "break-all",
           }}>
@@ -177,12 +226,12 @@ function PdfPanel({
       {/* Warning log — collapsed, shown on success if warnings > 0 */}
       {compileState === "success" && warningCount > 0 && (
         <details style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, background: "var(--ink-raised)" }}>
-          <summary style={{ padding: "4px 10px", fontSize: 9, cursor: "pointer", color: "var(--lamp)" }}>
+          <summary style={{ padding: "4px 10px", fontSize: 11, cursor: "pointer", color: "var(--lamp)" }}>
             {warningCount} warning{warningCount !== 1 ? "s" : ""} — click to expand
           </summary>
           <pre style={{
             margin: 0, padding: "6px 10px", maxHeight: 120, overflow: "auto",
-            fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--lamp)",
+            fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--lamp)",
             whiteSpace: "pre-wrap", wordBreak: "break-all",
           }}>
             {compileLog.split("\n").filter((l: string) => l.toLowerCase().includes("warning")).join("\n")}
@@ -219,6 +268,25 @@ export default function AppShell() {
   const [warningCount,  setWarningCount]  = useState(0);
   const [pdfKey,        setPdfKey]        = useState(0);
   const [mainFile,      setMainFile]      = useState<string | null>(null);
+
+  // Panel widths — start with SSR-safe defaults, sync from localStorage after mount
+  const [railWidth,    setRailWidth]    = useState(200);
+  const [previewWidth, setPreviewWidth] = useState(280);
+
+  // Read persisted values after hydration (avoids SSR mismatch)
+  useEffect(() => {
+    const r = Number(localStorage.getItem(RAIL_KEY));
+    const p = Number(localStorage.getItem(PREVIEW_KEY));
+    if (r > 0) setRailWidth(r);
+    if (p > 0) setPreviewWidth(p);
+  }, []);
+
+  // Persist on every change
+  useEffect(() => { localStorage.setItem(RAIL_KEY,    String(railWidth));    }, [railWidth]);
+  useEffect(() => { localStorage.setItem(PREVIEW_KEY, String(previewWidth)); }, [previewWidth]);
+
+  const dragRail    = useCallback((dx: number) => setRailWidth(w    => clamp(w + dx,  80, 900)),  []);
+  const dragPreview = useCallback((dx: number) => setPreviewWidth(w => clamp(w - dx, 150, 1100)), []);
 
   // Refs that survive re-renders for use in callbacks
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -413,7 +481,7 @@ export default function AppShell() {
               <>
                 <button
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: 12 }}
+                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: 15 }}
                 >
                   Projects
                 </button>
@@ -422,7 +490,7 @@ export default function AppShell() {
                 {selectedFile && (
                   <>
                     <span className="breadcrumb-sep">/</span>
-                    <span className="breadcrumb-active mono" style={{ fontSize: 11 }}>
+                    <span className="breadcrumb-active mono" style={{ fontSize: 14 }}>
                       {selectedFile.replace(/\//g, " / ")}
                     </span>
                   </>
@@ -440,22 +508,29 @@ export default function AppShell() {
         </div>
       </header>
 
-      {/* ── Body ── */}
-      <div className="app-body">
+      {/* ── Body — flex row with drag handles ── */}
+      <div
+        className="app-body"
+        style={{ display: "flex", gridTemplateColumns: undefined }}
+      >
 
         {/* ── Left rail ── */}
-        <aside className="rail-panel" aria-label="File explorer">
+        <aside
+          className="rail-panel"
+          aria-label="File explorer"
+          style={{ width: railWidth, flexShrink: 0 }}
+        >
           {project ? (
             <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
               <div className="panel-header">
                 <button
                   className="btn-sm btn-ghost"
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ fontSize: 11, gap: 4 }}
+                  style={{ fontSize: 14, gap: 4 }}
                 >
                   ← Projects
                 </button>
-                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
                   {project}
                 </span>
               </div>
@@ -472,11 +547,14 @@ export default function AppShell() {
           )}
         </aside>
 
+        {/* ── Drag: rail ↔ editor ── */}
+        <DragHandle onDrag={dragRail} />
+
         {/* ── Editor ── */}
-        <main className="editor-panel" aria-label="Code editor">
+        <main className="editor-panel" aria-label="Code editor" style={{ flex: 1, minWidth: 0 }}>
           {fileLoading ? (
             <div className="editor-empty" style={{ flex: 1 }}>
-              <span className="serif editor-empty-glyph loading-pulse" style={{ fontSize: 48 }}>…</span>
+              <span className="serif editor-empty-glyph loading-pulse" style={{ fontSize: 60 }}>…</span>
               <p className="editor-empty-label">Loading file</p>
             </div>
           ) : selectedFile ? (
@@ -490,7 +568,7 @@ export default function AppShell() {
             />
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>
-              <span className="serif editor-empty-glyph" style={{ fontSize: 64, color: "var(--rule-emphasis)", fontStyle: "italic" }}>
+              <span className="serif editor-empty-glyph" style={{ fontSize: 80, color: "var(--rule-emphasis)", fontStyle: "italic" }}>
                 {project ? "λ" : "Ω"}
               </span>
               <p className="editor-empty-label" style={{ maxWidth: 260 }}>
@@ -516,7 +594,7 @@ export default function AppShell() {
                 {selectedFile ?? "Open Overleaf v0.1"}
               </span>
               {mainFile && (
-                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: 9 }}>
+                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: 11 }}>
                   ⌖ {mainFile}
                 </span>
               )}
@@ -537,6 +615,9 @@ export default function AppShell() {
           </div>
         </main>
 
+        {/* ── Drag: editor ↔ preview ── */}
+        <DragHandle onDrag={dragPreview} />
+
         {/* ── PDF Preview ── */}
         <PdfPanel
           project={project}
@@ -548,6 +629,7 @@ export default function AppShell() {
           warningCount={warningCount}
           onManualCompile={handleManualCompile}
           onDownload={handleDownload}
+          width={previewWidth}
         />
       </div>
 

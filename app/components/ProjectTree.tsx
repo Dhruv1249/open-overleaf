@@ -38,7 +38,7 @@ function FileIcon({ name }: { name: string }) {
   return (
     <span style={{
       fontFamily: "var(--font-mono)",
-      fontSize: 11,
+      fontSize: 14,
       color: icon.color,
       width: 16,
       textAlign: "center",
@@ -53,7 +53,7 @@ function FileIcon({ name }: { name: string }) {
 function FolderIcon({ open }: { open: boolean }) {
   return (
     <span style={{
-      fontSize: 11,
+      fontSize: 14,
       color: "var(--lamp)",
       width: 16,
       textAlign: "center",
@@ -161,7 +161,7 @@ function Modal({
         width: 340,
         boxShadow: "0 24px 48px rgba(0,0,0,0.55)",
       }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--quill-primary)", marginBottom: 14 }}>
+        <div style={{ fontSize: 16, fontWeight: 600, color: "var(--quill-primary)", marginBottom: 14 }}>
           {title}
         </div>
         {children}
@@ -189,12 +189,12 @@ function ModalInput({
           width: "100%", padding: "7px 10px",
           background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
           borderRadius: "var(--r-sm)", color: "var(--quill-primary)",
-          fontSize: 12, fontFamily: "var(--font-mono)", outline: "none",
+          fontSize: 15, fontFamily: "var(--font-mono)", outline: "none",
         }}
         onFocus={(e) => (e.target.style.borderColor = "var(--rule-focus)")}
         onBlur={(e) => (e.target.style.borderColor = "var(--ctrl-border)")}
       />
-      {hint && <div style={{ marginTop: 5, fontSize: 11, color: "var(--quill-muted)" }}>{hint}</div>}
+      {hint && <div style={{ marginTop: 5, fontSize: 14, color: "var(--quill-muted)" }}>{hint}</div>}
     </>
   );
 }
@@ -275,7 +275,7 @@ function TreeItem({
         {isDir ? (
           <span className="tree-chevron">
             {isLoading ? (
-              <span style={{ fontSize: 9, animation: "compile-spin 0.8s linear infinite", display: "inline-block" }}>⟳</span>
+              <span style={{ fontSize: 11, animation: "compile-spin 0.8s linear infinite", display: "inline-block" }}>⟳</span>
             ) : (
               isExpanded ? "▾" : "▸"
             )}
@@ -610,7 +610,7 @@ export default function ProjectTree({
   };
 
   return (
-    <div style={{ userSelect: "none", fontSize: 13 }}>
+    <div style={{ userSelect: "none", fontSize: 16 }}>
       {/* ── Tree contents ── */}
       {rootLoading ? (
         <div style={{ padding: "8px 0" }}>
@@ -622,7 +622,7 @@ export default function ProjectTree({
           ))}
         </div>
       ) : !rootEntries || rootEntries.length === 0 ? (
-        <div style={{ padding: "12px 12px 8px", color: "var(--quill-muted)", fontSize: 12 }}>
+        <div style={{ padding: "12px 12px 8px", color: "var(--quill-muted)", fontSize: 15 }}>
           Empty project
         </div>
       ) : (
@@ -640,21 +640,21 @@ export default function ProjectTree({
       }}>
         <button
           className="btn-sm"
-          style={{ flex: 1, fontSize: 11 }}
+          style={{ flex: 1, fontSize: 14 }}
           onClick={() => { setInputValue(""); setDialog({ type: "create", parentPath: "", isFolder: false }); }}
         >
           + File
         </button>
         <button
           className="btn-sm"
-          style={{ flex: 1, fontSize: 11 }}
+          style={{ flex: 1, fontSize: 14 }}
           onClick={() => { setInputValue(""); setDialog({ type: "create", parentPath: "", isFolder: true }); }}
         >
           + Folder
         </button>
         <button
           className="btn-sm btn-ghost"
-          style={{ fontSize: 11, padding: "4px 8px" }}
+          style={{ fontSize: 14, padding: "4px 8px" }}
           onClick={refreshTree}
           title="Refresh"
         >
@@ -670,14 +670,14 @@ export default function ProjectTree({
           background: "var(--ink-danger-dim)",
           border: "1px solid rgba(176,82,82,0.25)",
           borderRadius: "var(--r-sm)",
-          fontSize: 11,
+          fontSize: 14,
           color: "var(--ink-danger)",
           display: "flex", gap: 8, justifyContent: "space-between",
         }}>
           <span>{opError}</span>
           <button
             onClick={() => setOpError(null)}
-            style={{ background: "none", border: "none", color: "var(--ink-danger)", cursor: "pointer", fontSize: 12 }}
+            style={{ background: "none", border: "none", color: "var(--ink-danger)", cursor: "pointer", fontSize: 15 }}
           >✕</button>
         </div>
       )}
@@ -698,7 +698,7 @@ export default function ProjectTree({
             onSubmit={handleCreate}
             hint={(dialog as any).parentPath ? `Inside: ${(dialog as any).parentPath}/` : ""}
           />
-          {opError && <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-danger)" }}>{opError}</div>}
+          {opError && <div style={{ marginTop: 8, fontSize: 14, color: "var(--ink-danger)" }}>{opError}</div>}
           <ModalActions
             onCancel={() => setDialog(null)}
             onConfirm={handleCreate}
@@ -711,13 +711,13 @@ export default function ProjectTree({
       {/* ── Delete dialog ── */}
       {dialog?.type === "delete" && (
         <Modal title={`Delete "${dialog.entry.name}"`} onClose={() => setDialog(null)}>
-          <p style={{ fontSize: 12, color: "var(--quill-secondary)", lineHeight: 1.6 }}>
+          <p style={{ fontSize: 15, color: "var(--quill-secondary)", lineHeight: 1.6 }}>
             {dialog.entry.type === "dir"
               ? <>This will <strong>recursively delete</strong> all files inside <code>{dialog.entry.name}</code> from GitHub. This cannot be undone.</>
               : <>This permanently deletes <code>{dialog.entry.name}</code> from GitHub. This cannot be undone.</>
             }
           </p>
-          {opError && <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-danger)" }}>{opError}</div>}
+          {opError && <div style={{ marginTop: 8, fontSize: 14, color: "var(--ink-danger)" }}>{opError}</div>}
           <ModalActions
             onCancel={() => setDialog(null)}
             onConfirm={handleDelete}
@@ -731,7 +731,7 @@ export default function ProjectTree({
       {/* ── Move dialog ── */}
       {dialog?.type === "move" && (
         <Modal title={`Move "${dialog.entry.name}"`} onClose={() => setDialog(null)}>
-          <div style={{ fontSize: 11, color: "var(--quill-tertiary)", marginBottom: 8 }}>
+          <div style={{ fontSize: 14, color: "var(--quill-tertiary)", marginBottom: 8 }}>
             New path relative to project root:
           </div>
           <ModalInput
@@ -740,7 +740,7 @@ export default function ProjectTree({
             placeholder="chapters/newname.tex"
             onSubmit={handleMove}
           />
-          {opError && <div style={{ marginTop: 8, fontSize: 11, color: "var(--ink-danger)" }}>{opError}</div>}
+          {opError && <div style={{ marginTop: 8, fontSize: 14, color: "var(--ink-danger)" }}>{opError}</div>}
           <ModalActions
             onCancel={() => setDialog(null)}
             onConfirm={handleMove}
