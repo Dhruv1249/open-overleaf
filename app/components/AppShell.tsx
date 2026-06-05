@@ -436,6 +436,7 @@ export default function AppShell() {
     setFileLoading(true);
     setFileContent("");
     currentContent.current = "";
+    setMobileTab("editor");   // auto-navigate to editor on mobile
 
     // Always use the opened .tex file as the compile target
     if (filePath.endsWith(".tex")) {

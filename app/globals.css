@@ -213,6 +213,7 @@ body {
   flex-direction: column;
   overflow: hidden;
   min-width: 200px;
+  max-width: calc(100vw - 350px); /* never push editor off-screen */
 }
 
 /* ─── DRAG HANDLE (resizable panels) ─────────────────────────────────────── */
@@ -1090,11 +1091,38 @@ body {
 
 /* ─── RESPONSIVE / MOBILE ─────────────────────────────────────────────────── */
 
-/* Tablet: slightly smaller base, hide PDF preview */
-@media (max-width: 1200px) {
+/* Tablet: slightly smaller base, hide PDF preview in desktop layout */
+@media (max-width: 1100px) {
   html { font-size: 18px; }
   .preview-panel { display: none !important; }
   .drag-handle:last-of-type { display: none !important; }
+}
+
+/* ─── MOBILE TITLEBAR ─────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* Keep only the logo icon — hide all text in wordmark */
+  .wordmark-text { display: none; }
+  .wordmark-tag  { display: none; }
+
+  /* Compact center breadcrumb */
+  .titlebar-center {
+    max-width: 140px;
+    overflow: hidden;
+  }
+  .breadcrumb {
+    flex-wrap: nowrap;
+    overflow: hidden;
+    max-width: 100%;
+  }
+  .breadcrumb-active {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Compact right: stack icon + minimal text */
+  .titlebar-right {
+    flex-shrink: 0;
+  }
 }
 
 /* Mobile: single-pane with tab navigation */
@@ -1104,6 +1132,10 @@ body {
   .app-shell {
     grid-template-rows: 2.5rem 1fr 3.5rem;
   }
+
+  /* Override tablet's preview-panel display:none so the Preview tab works */
+  .preview-panel { display: flex !important; }
+  .drag-handle:last-of-type { display: none !important; }
 
   /* Stack panels — active one slides into view */
   .app-body {
@@ -1119,6 +1151,7 @@ body {
     inset: 0 !important;
     width: 100% !important;
     height: 100% !important;
+    max-width: 100% !important;     /* override desktop max-width constraint */
     transition: transform 0.3s var(--ease-standard);
     flex-shrink: unset !important;
   }
