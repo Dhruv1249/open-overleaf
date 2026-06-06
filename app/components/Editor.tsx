@@ -504,12 +504,16 @@ export default function Editor({ content: initial, onSave, onContentChange, file
 
   const language = getLanguage(filename);
 
-  // Reset content when file changes
+  // Reset content when file changes (key={selectedFile} in AppShell already
+  // causes a full remount on file switch, but we keep filename in deps as a
+  // safety net. Intentionally NOT including `initial` — auto-save updates
+  // fileContent which would otherwise reset the editor while the user is typing).
   useEffect(() => {
     setValue(initial || "");
     setDirty(false);
     docVersion.current = 0;
-  }, [initial, filename]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filename]);
 
   // ── TexLab connection for diagnostics ─────────────────────────────────────
   useEffect(() => {

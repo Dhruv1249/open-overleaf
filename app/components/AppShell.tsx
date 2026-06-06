@@ -52,9 +52,19 @@ function clamp(v: number, min: number, max: number) { return Math.max(min, Math.
 
 type SaveState    = "idle" | "saving" | "saved" | "error";
 type CompileState = "idle" | "syncing" | "compiling" | "success" | "error";
+type CompileMode  = "manual" | "debounced" | "live" | "interval";
+type Engine       = "auto" | "xelatex" | "pdflatex" | "lualatex" | "latexmk";
 
-const RAIL_KEY    = "oo-rail-width";
-const PREVIEW_KEY = "oo-preview-width";
+const RAIL_KEY      = "oo-rail-width";
+const PREVIEW_KEY   = "oo-preview-width";
+const SETTINGS_KEY  = "oo-compiler-settings";
+
+const DEFAULT_SETTINGS = {
+  engine:          "auto"       as Engine,
+  mode:            "debounced"  as CompileMode,
+  intervalSeconds: 30,
+  autoSaveSeconds: 3,
+};
 
 
 // ── PDF Preview panel ─────────────────────────────────────────────────────────
@@ -69,6 +79,8 @@ function PdfPanel({
   onManualCompile,
   onDownload,
   width,
+  settings,
+  onSettingsChange,
 }: {
   project: string | null;
   mainFile: string | null;
@@ -80,6 +92,8 @@ function PdfPanel({
   onManualCompile: () => void;
   onDownload: () => void;
   width: number;
+  settings: typeof DEFAULT_SETTINGS;
+  onSettingsChange: (s: typeof DEFAULT_SETTINGS) => void;
 }) {
   const pdfSrc = project && mainFile && pdfKey > 0
     ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}`
@@ -95,6 +109,7 @@ function PdfPanel({
 
         {/* Compile status pill */}
         <span style={{
+
           fontSize: "0.75rem", fontFamily: "var(--font-mono)", padding: "2px 8px",
           borderRadius: 4, whiteSpace: "nowrap",
           background:
@@ -261,17 +276,93 @@ function PdfPanel({
         </details>
       )}
 
-      {/* Footer */}
-      <div style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0 }}>
-        <div className="info-row">
-          <span className="info-label">Auto-compile</span>
-          <span className="info-value">2s after typing stops</span>
+      {/* ── Compiler settings footer ── */}
+      <div style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+
+        {/* Engine */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Engine</span>
+          <select
+            value={settings.engine}
+            onChange={e => onSettingsChange({ ...settings, engine: e.target.value as Engine })}
+            style={{
+              background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+              borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+              fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+              cursor: "pointer", outline: "none", padding: "2px 6px",
+            }}
+          >
+            <option value="auto">auto-detect</option>
+            <option value="xelatex">xelatex</option>
+            <option value="pdflatex">pdflatex</option>
+            <option value="lualatex">lualatex</option>
+            <option value="latexmk">latexmk</option>
+          </select>
         </div>
-        <div className="info-row" style={{ borderBottom: "none" }}>
-          <span className="info-label">Engine</span>
-          <span className="info-value">pdflatex / xelatex</span>
+
+        {/* Compile mode */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <select
+              value={settings.mode}
+              onChange={e => onSettingsChange({ ...settings, mode: e.target.value as CompileMode })}
+              style={{
+                background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+                borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+                fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+                cursor: "pointer", outline: "none", padding: "2px 6px",
+              }}
+            >
+              <option value="debounced">Auto (2s)</option>
+              <option value="live">Live (500ms)</option>
+              <option value="interval">Every N seconds</option>
+              <option value="manual">Manual</option>
+            </select>
+            {settings.mode === "interval" && (
+              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                <input
+                  type="number"
+                  min={5} max={300} step={5}
+                  value={settings.intervalSeconds}
+                  onChange={e => onSettingsChange({ ...settings, intervalSeconds: Math.max(5, Number(e.target.value)) })}
+                  style={{
+                    width: 48, padding: "2px 5px",
+                    background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+                    borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+                    fontSize: "0.75rem", fontFamily: "var(--font-mono)", outline: "none",
+                    textAlign: "center",
+                  }}
+                />
+                <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)" }}>s</span>
+              </div>
+            )}
+          </div>
         </div>
+
+        {/* Auto-save */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Auto-save</span>
+          <select
+            value={settings.autoSaveSeconds}
+            onChange={e => onSettingsChange({ ...settings, autoSaveSeconds: Number(e.target.value) })}
+            style={{
+              background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+              borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+              fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+              cursor: "pointer", outline: "none", padding: "2px 6px",
+            }}
+          >
+            <option value={2}>After 2s</option>
+            <option value={3}>After 3s</option>
+            <option value={5}>After 5s</option>
+            <option value={10}>After 10s</option>
+            <option value={0}>Disabled</option>
+          </select>
+        </div>
+
       </div>
+
     </aside>
   );
 }
@@ -298,13 +389,24 @@ export default function AppShell() {
   // Mobile tab
   const [mobileTab, setMobileTab] = useState<"files"|"editor"|"preview">("editor");
 
+  // Compiler settings
+  const [compilerSettings, setCompilerSettings] = useState(DEFAULT_SETTINGS);
+
   // Read persisted values after hydration (avoids SSR mismatch)
   useEffect(() => {
     const r = Number(localStorage.getItem(RAIL_KEY));
     const p = Number(localStorage.getItem(PREVIEW_KEY));
     if (r > 0) setRailWidth(r);
     if (p > 0) setPreviewWidth(p);
+    // Restore compiler settings
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (raw) setCompilerSettings(s => ({ ...s, ...JSON.parse(raw) }));
+    } catch {}
   }, []);
+
+  // Persist compiler settings
+  useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(compilerSettings)); }, [compilerSettings]);
 
   // Persist on every change
   useEffect(() => { localStorage.setItem(RAIL_KEY,    String(railWidth));    }, [railWidth]);
@@ -315,15 +417,19 @@ export default function AppShell() {
 
   // Refs that survive re-renders for use in callbacks
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoSaveTimer    = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentContent   = useRef<string>("");        // latest editor content (possibly unsaved)
   const currentFile      = useRef<string | null>(null);
   const currentProject   = useRef<string | null>(null);
   const currentMainFile  = useRef<string | null>(null);
+  const settingsRef      = useRef(compilerSettings); // always latest settings in callbacks
+  const saveFileRef      = useRef<((c: string) => Promise<void>) | null>(null); // set after handleSaveFile defined
 
   // Keep refs in sync
   useEffect(() => { currentProject.current  = project;  }, [project]);
   useEffect(() => { currentFile.current     = selectedFile; }, [selectedFile]);
   useEffect(() => { currentMainFile.current = mainFile; }, [mainFile]);
+  useEffect(() => { settingsRef.current = compilerSettings; }, [compilerSettings]);
 
   // Reset compile state when project changes
   useEffect(() => {
@@ -348,7 +454,7 @@ export default function AppShell() {
       const res = await fetch(`/api/projects/${encodeURIComponent(projectName)}/compile`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mainFile: mf, engine: "auto", overrides }),
+    body: JSON.stringify({ mainFile: mf, engine: settingsRef.current.engine, overrides }),
       });
       const data = await res.json();
 
@@ -381,17 +487,31 @@ export default function AppShell() {
     }
   }, []);
 
-  // ── Auto-compile: fires 2s after typing stops ─────────────────────────────
+  // ── Auto-compile: debounce delay based on mode ───────────────────────────
   const scheduleAutoCompile = useCallback(() => {
+    const mode = settingsRef.current.mode;
+    if (mode === "manual" || mode === "interval") return;  // don't schedule
+    const delay = mode === "live" ? 500 : 2000;            // live=500ms, debounced=2s
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
     autoCompileTimer.current = setTimeout(() => {
       const proj = currentProject.current;
-      const file = currentFile.current;   // always compile the file that's open
+      const file = currentFile.current;
       if (!proj || !file || !file.endsWith(".tex")) return;
-      // Send current unsaved content as an override so we compile what's on screen
       compile(proj, file, [{ path: file, content: currentContent.current }]);
-    }, 2000);
+    }, delay);
   }, [compile]);
+
+  // ── Interval compile (fires every N seconds when mode=interval) ───────────
+  useEffect(() => {
+    if (compilerSettings.mode !== "interval") return;
+    const id = setInterval(() => {
+      const proj = currentProject.current;
+      const file = currentFile.current;
+      if (!proj || !file || !file.endsWith(".tex")) return;
+      compile(proj, file, [{ path: file, content: currentContent.current }]);
+    }, compilerSettings.intervalSeconds * 1000);
+    return () => clearInterval(id);
+  }, [compile, compilerSettings.mode, compilerSettings.intervalSeconds]);
 
   // ── Manual compile (force, no debounce) ──────────────────────────────────
   const handleManualCompile = useCallback(() => {
@@ -407,6 +527,14 @@ export default function AppShell() {
   const handleContentChange = useCallback((content: string) => {
     currentContent.current = content;
     scheduleAutoCompile();
+    // Auto-save debounce — use ref so we don't capture a stale handleSaveFile
+    const secs = settingsRef.current.autoSaveSeconds;
+    if (secs > 0) {
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = setTimeout(() => {
+        saveFileRef.current?.(content);
+      }, secs * 1000);
+    }
   }, [scheduleAutoCompile]);
 
   // ── Download ──────────────────────────────────────────────────────────────
@@ -488,6 +616,9 @@ export default function AppShell() {
       setTimeout(() => setSaveState("idle"), 3000);
     }
   }, [project, selectedFile]);
+
+  // Keep save ref in sync so auto-save timer always calls the latest version
+  useEffect(() => { saveFileRef.current = handleSaveFile; }, [handleSaveFile]);
 
   const filename = selectedFile ? selectedFile.split("/").pop() : undefined;
 
@@ -586,6 +717,7 @@ export default function AppShell() {
             </div>
           ) : selectedFile ? (
             <Editor
+              key={selectedFile}
               content={fileContent}
               onSave={handleSaveFile}
               onContentChange={handleContentChange}
@@ -657,6 +789,8 @@ export default function AppShell() {
           onManualCompile={handleManualCompile}
           onDownload={handleDownload}
           width={previewWidth}
+          settings={compilerSettings}
+          onSettingsChange={setCompilerSettings}
         />
       </div>
 

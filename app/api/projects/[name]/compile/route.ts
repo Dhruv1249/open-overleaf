@@ -145,15 +145,13 @@ export async function POST(
       }, { status: 404 });
     }
 
-    // ── Step 2: Run LaTeX compiler ──────────────────────────────────────────
-    // Two passes: first for initial compilation, second for cross-references
-    const compileArgs = [
-      `-${engine}`,
-      "-interaction=nonstopmode",
-      "-file-line-error",
-      `-output-directory=${workDir}`,
-      mainFile,
-    ];
+    // ── Step 2: Delete stale PDF, then run LaTeX compiler ──────────────────
+    // IMPORTANT: workDir persists between requests. If a previous compile
+    // succeeded, the old PDF would still be present. We delete it first so
+    // pdfExists is only true when THIS invocation produced a fresh file.
+    const pdfName = path.basename(mainFile).replace(/\.tex$/, ".pdf");
+    const pdfPath = path.join(workDir, pdfName);
+    try { if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath); } catch {}
 
     // Use latexmk if available (handles bibtex/biber automatically)
     const latexmkPath = "/usr/bin/latexmk";
@@ -190,11 +188,7 @@ export async function POST(
 
     const log = (result.stdout + "\n" + result.stderr).trim();
 
-    // Check PDF was produced
-    // xelatex always writes the PDF as basename-only inside -output-directory
-    // e.g. mainFile="ytfc/sdfasd.tex" → PDF at workDir/sdfasd.pdf, NOT workDir/ytfc/sdfasd.pdf
-    const pdfName = path.basename(mainFile).replace(/\.tex$/, ".pdf");
-    const pdfPath = path.join(workDir, pdfName);
+    // Check PDF was produced by THIS compile run (stale files deleted above)
     const pdfExists = fs.existsSync(pdfPath);
 
     if (!pdfExists) {

@@ -477,25 +477,42 @@ export default function ProjectTree({
     }
   }, [ctxMenu]);
 
-  // ── Inline rename ──────────────────────────────────────────────────────────
+  // ── Inline rename (optimistic) ─────────────────────────────────────────────
   const submitInlineRename = useCallback(async () => {
     if (!inlineRename?.value.trim()) { setInlineRename(null); return; }
-    const parts = inlineRename.path.split("/");
+    const oldPath = inlineRename.path;
+    const parts = oldPath.split("/");
     parts[parts.length - 1] = inlineRename.value.trim();
     const newPath = parts.join("/");
-    if (newPath === inlineRename.path) { setInlineRename(null); return; }
-    setWorking(true);
+    if (newPath === oldPath) { setInlineRename(null); return; }
+
+    // ── Optimistic: update tree immediately ──────────────────────────────────
+    const rename = (e: Entry) => e.path === oldPath ? { ...e, name: inlineRename.value.trim(), path: newPath } : e;
+    const snapshotRoot = rootEntries;
+    const snapshotDirs = new Map(dirContents);
+    setRootEntries(prev => prev?.map(rename) ?? prev);
+    setDirContents(prev => {
+      const next = new Map(prev);
+      for (const [k, v] of next) next.set(k, v.map(rename));
+      return next;
+    });
+    setInlineRename(null);
+
+    // ── Background sync ──────────────────────────────────────────────────────
     try {
       const res  = await fetch(`/api/projects/${encodeURIComponent(project)}/rename`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from: inlineRename.path, to: newPath }),
+        body: JSON.stringify({ from: oldPath, to: newPath }),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Rename failed");
-      setInlineRename(null); await refreshTree();
-    } catch (e: any) { setOpError(e.message); setInlineRename(null); }
-    finally { setWorking(false); }
-  }, [inlineRename, project, refreshTree]);
+    } catch (e: any) {
+      // Revert
+      setRootEntries(snapshotRoot);
+      setDirContents(snapshotDirs);
+      setOpError(e.message);
+    }
+  }, [inlineRename, project, rootEntries, dirContents]);
 
   // F2 rename
   useEffect(() => {
@@ -509,30 +526,71 @@ export default function ProjectTree({
     return () => window.removeEventListener("keydown", h);
   }, [selectedFile, inlineRename]);
 
-  // ── Create ─────────────────────────────────────────────────────────────────
+  // ── Create (optimistic) ────────────────────────────────────────────────────
   const handleCreate = useCallback(async () => {
     if (!inputValue.trim() || dialog?.type !== "create") return;
     const parent = (dialog as any).parentPath as string;
     const isFolder = (dialog as any).isFolder as boolean;
-    const path = parent ? `${parent}/${inputValue.trim()}` : inputValue.trim();
-    setWorking(true); setOpError(null);
+    const newPath = parent ? `${parent}/${inputValue.trim()}` : inputValue.trim();
+    const newName = inputValue.trim();
+    setOpError(null);
+
+    // ── Optimistic: add entry immediately ────────────────────────────────────
+    const newEntry: Entry = { name: newName, path: newPath, type: isFolder ? "dir" : "file" };
+    const snapshotRoot = rootEntries;
+    const snapshotDirs = new Map(dirContents);
+    if (parent) {
+      setDirContents(prev => {
+        const next = new Map(prev);
+        const existing = next.get(parent) || [];
+        next.set(parent, [...existing, newEntry]);
+        return next;
+      });
+    } else {
+      setRootEntries(prev => [...(prev || []), newEntry]);
+    }
+    setDialog(null);
+
+    // ── Background sync ──────────────────────────────────────────────────────
     try {
       const res  = await fetch(`/api/projects/${encodeURIComponent(project)}/file`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path, isFolder }),
+        body: JSON.stringify({ path: newPath, isFolder }),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed");
-      setDialog(null); await refreshTree();
-    } catch (e: any) { setOpError(e.message); }
-    finally { setWorking(false); }
-  }, [inputValue, dialog, project, refreshTree]);
+    } catch (e: any) {
+      // Revert
+      setRootEntries(snapshotRoot);
+      setDirContents(snapshotDirs);
+      setOpError(e.message);
+    }
+  }, [inputValue, dialog, project, rootEntries, dirContents]);
 
-  // ── Delete ─────────────────────────────────────────────────────────────────
+  // ── Delete (optimistic) ────────────────────────────────────────────────────
   const handleDelete = useCallback(async () => {
     if (dialog?.type !== "delete") return;
     const entry = dialog.entry;
-    setWorking(true); setOpError(null);
+    setOpError(null);
+
+    // ── Optimistic: remove immediately ───────────────────────────────────────
+    const dp = entry.path;
+    const snapshotRoot = rootEntries;
+    const snapshotDirs = new Map(dirContents);
+    const snapshotExp  = new Set(expandedDirs);
+    setRootEntries(prev => prev?.filter(e => e.path !== dp && !e.path.startsWith(dp + "/")) ?? prev);
+    setDirContents(prev => {
+      const next = new Map(prev);
+      for (const [k, v] of next) {
+        if (k === dp || k.startsWith(dp + "/")) next.delete(k);
+        else next.set(k, v.filter(e => e.path !== dp && !e.path.startsWith(dp + "/")));
+      }
+      return next;
+    });
+    setExpandedDirs(prev => { const n = new Set(prev); for (const x of prev) if (x===dp||x.startsWith(dp+"/")) n.delete(x); return n; });
+    setDialog(null);
+
+    // ── Background sync ──────────────────────────────────────────────────────
     try {
       const tp  = entry.type === "dir" ? "&type=dir" : "&type=file";
       const res  = await fetch(
@@ -541,31 +599,42 @@ export default function ProjectTree({
       );
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed");
-      setDialog(null);
-      const dp = entry.path;
-      setExpandedDirs((p) => { const n = new Set(p); for (const x of p) if (x===dp||x.startsWith(dp+"/")) n.delete(x); return n; });
-      setDirContents((p)  => { const n = new Map(p); for (const x of p.keys()) if (x===dp||x.startsWith(dp+"/")) n.delete(x); return n; });
-      await refreshTree();
-    } catch (e: any) { setOpError(e.message); }
-    finally { setWorking(false); }
-  }, [dialog, project, refreshTree]);
+    } catch (e: any) {
+      // Revert
+      setRootEntries(snapshotRoot);
+      setDirContents(snapshotDirs);
+      setExpandedDirs(snapshotExp);
+      setOpError(e.message);
+    }
+  }, [dialog, project, rootEntries, dirContents, expandedDirs]);
 
-  // ── Move (dialog) ──────────────────────────────────────────────────────────
+  // ── Move dialog (optimistic) ───────────────────────────────────────────────
   const handleMove = useCallback(async () => {
     if (dialog?.type !== "move" || !inputValue.trim()) return;
     const oldPath = dialog.entry.path;
-    setWorking(true); setOpError(null);
+    const newPath = inputValue.trim();
+    const newName = newPath.split("/").pop() || newPath;
+
+    // Optimistic
+    const rename = (e: Entry) => e.path === oldPath ? { ...e, name: newName, path: newPath } : e;
+    const snapshotRoot = rootEntries;
+    const snapshotDirs = new Map(dirContents);
+    setRootEntries(prev => prev?.map(rename) ?? prev);
+    setDirContents(prev => { const next = new Map(prev); for (const [k, v] of next) next.set(k, v.map(rename)); return next; });
+    setDialog(null);
+
     try {
       const res  = await fetch(`/api/projects/${encodeURIComponent(project)}/rename`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ from: oldPath, to: inputValue.trim() }),
+        body: JSON.stringify({ from: oldPath, to: newPath }),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Failed");
-      setDialog(null); await refreshTree();
-    } catch (e: any) { setOpError(e.message); }
-    finally { setWorking(false); }
-  }, [dialog, inputValue, project, refreshTree]);
+    } catch (e: any) {
+      setRootEntries(snapshotRoot); setDirContents(snapshotDirs);
+      setOpError(e.message);
+    }
+  }, [dialog, inputValue, project, rootEntries, dirContents]);
 
   // ── Drag-and-drop ──────────────────────────────────────────────────────────
   const handleDragStart   = useCallback((path: string) => setDraggingPath(path), []);
@@ -581,6 +650,42 @@ export default function ProjectTree({
     const toPath   = dirPath ? `${dirPath}/${fileName}` : fileName;
     if (toPath === fromPath) return;
     setOpError(null);
+
+    // ── Find movedEntry SYNCHRONOUSLY from current state (before any setState) ──
+    let movedEntry: Entry | undefined =
+      rootEntries?.find(e => e.path === fromPath);
+    if (!movedEntry) {
+      for (const v of dirContents.values()) {
+        const found = v.find(e => e.path === fromPath);
+        if (found) { movedEntry = found; break; }
+      }
+    }
+
+    const snapshotRoot = rootEntries;
+    const snapshotDirs = new Map(dirContents);
+    const updatedEntry: Entry = movedEntry
+      ? { ...movedEntry, name: fileName, path: toPath }
+      : { name: fileName, path: toPath, type: "file" };
+
+    // ── Root entries: remove old location + add to root if target is root ────
+    setRootEntries(prev => {
+      const without = prev?.filter(e => e.path !== fromPath) ?? [];
+      return dirPath ? without : [...without, updatedEntry];
+    });
+
+    // ── Dir contents: remove from all dirs + add to target dir if open ───────
+    setDirContents(prev => {
+      const next = new Map(prev);
+      for (const [k, v] of next) {
+        next.set(k, v.filter(e => e.path !== fromPath));
+      }
+      if (dirPath && next.has(dirPath)) {
+        next.set(dirPath, [...(next.get(dirPath) || []), updatedEntry]);
+      }
+      return next;
+    });
+
+    // ── Background sync ──────────────────────────────────────────────────────
     try {
       const res  = await fetch(`/api/projects/${encodeURIComponent(project)}/rename`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -588,9 +693,14 @@ export default function ProjectTree({
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Move failed");
-      await refreshTree();
-    } catch (e: any) { setOpError(e.message); }
-  }, [draggingPath, project, refreshTree]);
+    } catch (e: any) {
+      // Revert on failure
+      setRootEntries(snapshotRoot);
+      setDirContents(snapshotDirs);
+      setOpError(e.message);
+    }
+  }, [draggingPath, project, rootEntries, dirContents]);
+
 
   // ── Select guard ───────────────────────────────────────────────────────────
   const handleSelectFile = useCallback((path: string) => {
