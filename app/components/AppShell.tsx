@@ -1,12 +1,27 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect } from "react";
 import ThemeToggle from "./ThemeToggle";
 import UserStatus from "./UserStatus";
 import ProjectsList from "./ProjectsList";
 import ProjectTree from "./ProjectTree";
 import Editor from "./Editor";
 import VersionHistory from "./VersionHistory";
+
+// ── Google Drive icon (coloured SVG) ─────────────────────────────────────────────────────
+function DriveIcon({ color, size = 14 }: { color?: string; size?: number }) {
+  // Official Drive brand colours unless overridden
+  return (
+    <svg width={size} height={size} viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg" style={{ flexShrink: 0 }}>
+      <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3L28.35 53H0c0 1.55.4 3.1 1.2 4.5z" fill={color ?? "#0066da"}/>
+      <path d="M43.65 25 29.55 0c-1.35.8-2.5 1.9-3.3 3.3l-25.05 43.4A9.06 9.06 0 0 0 0 51h28.35z" fill={color ?? "#00ac47"}/>
+      <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59l6.4 11.65z" fill={color ?? "#ea4335"}/>
+      <path d="M43.65 25 57.75 0H29.55z" fill={color ?? "#00832d"}/>
+      <path d="M87.3 51H59L43.65 25 29.55 53H87.3c0-1.55-.4-3.1-1.2-4.5z" fill={color ?? "#2684fc"}/>
+      <path d="m59 53-14.95 26H86c.8-1.4 1.2-2.95 1.2-4.5L59 53z" fill={color ?? "#ffba00"}/>
+    </svg>
+  );
+}
 
 // ── Drag handle between panels ────────────────────────────────────────────────
 function DragHandle({ onDrag }: { onDrag: (dx: number) => void }) {
@@ -102,6 +117,68 @@ function PdfPanel({
 
   const spinning = compileState === "syncing" || compileState === "compiling";
 
+  // ── Google Drive state ───────────────────────────────────────────────────
+  const [driveConnected, setDriveConnected] = React.useState(false);
+  const [driveSyncing,   setDriveSyncing]   = React.useState(false);
+  const [driveLink,      setDriveLink]      = React.useState<string | null>(null);
+  const [drivePath,      setDrivePath]      = React.useState<string | null>(null);
+  const [driveError,     setDriveError]     = React.useState<string | null>(null);
+  const [lastSynced,     setLastSynced]     = React.useState<Date | null>(null);
+
+  React.useEffect(() => {
+    fetch("/api/auth/google/status")
+      .then(r => r.json())
+      .then(d => setDriveConnected(d.connected === true))
+      .catch(() => {});
+  }, []);
+
+  const connectDrive = React.useCallback(() => {
+    const popup = window.open("/api/auth/google", "google-drive-auth",
+      "width=500,height=620,left=200,top=100,resizable=yes,scrollbars=yes");
+    const onMsg = (e: MessageEvent) => {
+      if (e.origin !== window.location.origin) return;
+      if (e.data?.type === "google-auth") {
+        window.removeEventListener("message", onMsg);
+        if (e.data.status === "success") setDriveConnected(true);
+        popup?.close();
+      }
+    };
+    window.addEventListener("message", onMsg);
+  }, []);
+
+  const syncToDrive = React.useCallback(async () => {
+    if (!project || !mainFile || driveSyncing) return;
+    setDriveSyncing(true);
+    setDriveError(null);
+    try {
+      const res  = await fetch("/api/drive/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ project, mainFile }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setDriveLink(data.webViewLink);
+        setDrivePath(data.drivePath ?? null);
+        setLastSynced(new Date());
+      } else {
+        setDriveError(data.error ?? "Sync failed");
+      }
+    } catch (e: any) {
+      setDriveError(e.message);
+    } finally {
+      setDriveSyncing(false);
+    }
+  }, [project, mainFile, driveSyncing]);
+
+  const disconnectDrive = React.useCallback(async () => {
+    await fetch("/api/auth/google/status", { method: "DELETE" });
+    setDriveConnected(false);
+    setDriveLink(null);
+    setDrivePath(null);
+    setLastSynced(null);
+  }, []);
+
   return (
     <aside className="preview-panel" aria-label="PDF preview" style={{ width, flexShrink: 0 }}>
       {/* Header */}
@@ -171,8 +248,102 @@ function PdfPanel({
           >
             ⬇ PDF
           </button>
+
+          {/* Drive button */}
+          {!driveConnected ? (
+            <button
+              onClick={connectDrive}
+              title="Connect Google Drive to sync your PDF"
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "6px 12px",
+                background: "rgba(66,133,244,0.10)",
+                border: "1px solid rgba(66,133,244,0.35)",
+                borderRadius: "var(--r-sm)",
+                color: "#4285f4",
+                fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: "0.8125rem",
+                cursor: "pointer", whiteSpace: "nowrap",
+                transition: "background 0.15s ease",
+              }}
+            >
+              <DriveIcon /> Drive
+            </button>
+          ) : (
+            <button
+              onClick={syncToDrive}
+              disabled={!pdfSrc || driveSyncing}
+              title={lastSynced ? `Last synced ${lastSynced.toLocaleTimeString()}` : "Sync PDF to Google Drive"}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "6px 12px",
+                background: driveSyncing ? "rgba(52,168,83,0.06)" : "rgba(52,168,83,0.12)",
+                border: "1px solid rgba(52,168,83,0.35)",
+                borderRadius: "var(--r-sm)",
+                color: "#34a853",
+                fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: "0.8125rem",
+                cursor: (!pdfSrc || driveSyncing) ? "not-allowed" : "pointer",
+                opacity: (!pdfSrc || driveSyncing) ? 0.55 : 1,
+                transition: "background 0.15s ease, opacity 0.15s ease",
+                whiteSpace: "nowrap",
+              }}
+            >
+              <DriveIcon color="#34a853" />
+              {driveSyncing ? "Syncing…" : lastSynced ? "↺ Sync" : "↑ Sync"}
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Drive status bar */}
+      {driveConnected && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "5px 14px",
+          borderBottom: "1px solid var(--rule-faint)",
+          background: "rgba(52,168,83,0.04)",
+          flexShrink: 0, overflow: "hidden",
+        }}>
+          <DriveIcon color="#34a853" size={12} />
+          <div style={{ fontSize: "0.6875rem", color: "var(--quill-muted)", flex: 1, minWidth: 0 }}>
+            {driveError ? (
+              <span style={{ color: "var(--ink-danger)" }}>{driveError}</span>
+            ) : lastSynced ? (
+              <>
+                <span style={{ opacity: 0.65 }}>{lastSynced.toLocaleTimeString()}</span>
+                {" · "}
+                {drivePath && (
+                  <span
+                    title={drivePath}
+                    style={{
+                      fontFamily: "var(--font-mono)", fontSize: "0.625rem",
+                      color: "var(--quill-tertiary)",
+                      overflow: "hidden", textOverflow: "ellipsis",
+                      maxWidth: "calc(100% - 80px)", display: "inline-block",
+                      verticalAlign: "middle", whiteSpace: "nowrap",
+                    }}
+                  >
+                    {drivePath}
+                  </span>
+                )}
+                {" · "}
+                <a href={driveLink ?? "#"} target="_blank" rel="noreferrer"
+                  style={{ color: "#4285f4", textDecoration: "none", whiteSpace: "nowrap" }}>
+                  Open ↗
+                </a>
+              </>
+            ) : (
+              "Connected — click ↑ Sync to upload PDF"
+            )}
+          </div>
+          <button
+            onClick={disconnectDrive}
+            title="Disconnect Google Drive"
+            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--quill-muted)", fontSize: "0.6875rem", padding: "1px 4px", flexShrink: 0 }}
+          >
+            disconnect
+          </button>
+        </div>
+      )}
 
       {/* Main area: PDF or placeholder */}
       <div style={{ flex: 1, position: "relative", minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
@@ -394,28 +565,76 @@ export default function AppShell() {
   // Bumped on version restore to force Editor remount with restored content
   const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
 
-  // Compiler settings
+  // Compiler settings — persisted to GitHub (.overleaf.json) per project
+  // localStorage is used as an instant-boot cache to avoid SSR flicker.
   const [compilerSettings, setCompilerSettings] = useState(DEFAULT_SETTINGS);
+  const settingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Track which project we last saved settings for (avoids stale saves on project switch)
+  const settingsProjectRef = useRef<string | null>(null);
 
-  // Read persisted values after hydration (avoids SSR mismatch)
+  // Read panel widths from localStorage after hydration (SSR-safe)
   useEffect(() => {
     const r = Number(localStorage.getItem(RAIL_KEY));
     const p = Number(localStorage.getItem(PREVIEW_KEY));
     if (r > 0) setRailWidth(r);
     if (p > 0) setPreviewWidth(p);
-    // Restore compiler settings
-    try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      if (raw) setCompilerSettings(s => ({ ...s, ...JSON.parse(raw) }));
-    } catch {}
   }, []);
 
-  // Persist compiler settings
-  useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(compilerSettings)); }, [compilerSettings]);
-
-  // Persist on every change
+  // Persist panel widths
   useEffect(() => { localStorage.setItem(RAIL_KEY,    String(railWidth));    }, [railWidth]);
   useEffect(() => { localStorage.setItem(PREVIEW_KEY, String(previewWidth)); }, [previewWidth]);
+
+  // ── Load project settings from GitHub when project changes ────────────────
+  useEffect(() => {
+    if (!project) {
+      setCompilerSettings(DEFAULT_SETTINGS);
+      return;
+    }
+
+    // 1. Instant boot: apply cached settings from localStorage immediately
+    const cacheKey = `${SETTINGS_KEY}-${project}`;
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) setCompilerSettings(s => ({ ...s, ...JSON.parse(cached) }));
+    } catch {}
+
+    // 2. Authoritative: fetch from GitHub; merge & update cache
+    fetch(`/api/projects/${encodeURIComponent(project)}/settings`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.settings) {
+          setCompilerSettings(s => ({ ...s, ...data.settings }));
+          // Restore last-used mainFile for this project
+          if (data.settings.mainFile) setMainFile(data.settings.mainFile);
+          localStorage.setItem(cacheKey, JSON.stringify(data.settings));
+        }
+      })
+      .catch(() => {/* network error — use cached */});
+
+    settingsProjectRef.current = project;
+  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Debounced save of settings to GitHub on change ────────────────────────
+  // We only save after the user is settled (1.5 s), and only when a project is open.
+  useEffect(() => {
+    const proj = settingsProjectRef.current;
+    if (!proj) return;
+
+    // Always update localStorage immediately for instant reload
+    const cacheKey = `${SETTINGS_KEY}-${proj}`;
+    localStorage.setItem(cacheKey, JSON.stringify(compilerSettings));
+
+    // Debounce the GitHub write
+    if (settingsSaveTimer.current) clearTimeout(settingsSaveTimer.current);
+    settingsSaveTimer.current = setTimeout(() => {
+      const toSave = { ...compilerSettings, mainFile: currentMainFile.current };
+      fetch(`/api/projects/${encodeURIComponent(proj)}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: toSave }),
+      }).catch(() => {/* best-effort */});
+    }, 1500);
+  }, [compilerSettings]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dragRail    = useCallback((dx: number) => setRailWidth(w    => clamp(w + dx,  80, 900)),  []);
   const dragPreview = useCallback((dx: number) => setPreviewWidth(w => clamp(w - dx, 150, 1100)), []);
@@ -436,15 +655,31 @@ export default function AppShell() {
   useEffect(() => { currentMainFile.current = mainFile; }, [mainFile]);
   useEffect(() => { settingsRef.current = compilerSettings; }, [compilerSettings]);
 
+  // When mainFile changes, persist it into the project settings
+  useEffect(() => {
+    const proj = settingsProjectRef.current;
+    if (!proj || !mainFile) return;
+    if (settingsSaveTimer.current) clearTimeout(settingsSaveTimer.current);
+    settingsSaveTimer.current = setTimeout(() => {
+      const toSave = { ...settingsRef.current, mainFile };
+      fetch(`/api/projects/${encodeURIComponent(proj)}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ settings: toSave }),
+      }).catch(() => {});
+    }, 1500);
+  }, [mainFile]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Reset compile state when project changes
   useEffect(() => {
-    setMainFile(null);
     setCompileState("idle");
     setCompileLog("");
     setErrorCount(0);
     setWarningCount(0);
     setPdfKey(0);
     currentContent.current = "";
+    // mainFile will be restored by the settings loader above if it was saved
+    if (!project) setMainFile(null);
   }, [project]);
 
   // ── Core compile function ─────────────────────────────────────────────────
