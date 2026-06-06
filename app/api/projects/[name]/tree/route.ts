@@ -16,11 +16,14 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
     const rawEntries = await listDirectory(fullDirPath, req as unknown as Request);
 
     // Normalize: return paths relative to project root, not repo root
-    const entries = rawEntries.map((e: any) => ({
-      name: e.name,
-      path: subPath ? `${subPath}/${e.name}` : e.name,
-      type: e.type as "file" | "dir",
-    }));
+    // Filter out the hidden .open-overleaf metadata directory
+    const entries = rawEntries
+      .filter((e: any) => e.name !== ".open-overleaf" && !e.path?.includes("/.open-overleaf"))
+      .map((e: any) => ({
+        name: e.name,
+        path: subPath ? `${subPath}/${e.name}` : e.name,
+        type: e.type as "file" | "dir",
+      }));
 
     return NextResponse.json({ ok: true, entries });
   } catch (err: any) {

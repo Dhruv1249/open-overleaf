@@ -236,6 +236,7 @@ interface TreeItemProps {
   inlineRename: { path: string; value: string } | null;
   draggingPath: string | null;
   dragOverDir: string | null;
+  hoveredPath: string | null;
   onToggleDir: (path: string) => void;
   onSelectFile: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, entry: Entry) => void;
@@ -247,6 +248,8 @@ interface TreeItemProps {
   onDragEnterDir: (path: string) => void;
   onDragLeaveDir: () => void;
   onDropToDir: (dirPath: string) => void;
+  onHoverChange: (path: string | null) => void;
+  onQuickCreate: (parentPath: string, isFolder: boolean) => void;
 }
 
 function TreeItem(props: TreeItemProps) {
@@ -254,10 +257,11 @@ function TreeItem(props: TreeItemProps) {
     entry, depth, project,
     expandedDirs, dirContents, loadingDirs,
     selectedFile, inlineRename,
-    draggingPath, dragOverDir,
+    draggingPath, dragOverDir, hoveredPath,
     onToggleDir, onSelectFile, onContextMenu,
     onInlineRenameChange, onInlineRenameSubmit, onInlineRenameCancel,
     onDragStart, onDragEnd, onDragEnterDir, onDragLeaveDir, onDropToDir,
+    onHoverChange, onQuickCreate,
   } = props;
 
   const isDir      = entry.type === "dir";
@@ -267,6 +271,7 @@ function TreeItem(props: TreeItemProps) {
   const isRenaming = inlineRename?.path === entry.path;
   const isDragging = draggingPath === entry.path;
   const isDragOver = isDir && dragOverDir === entry.path;
+  const isHovered  = hoveredPath === entry.path;
   const children   = dirContents.get(entry.path);
   const indent     = depth * 12;
 
@@ -279,12 +284,15 @@ function TreeItem(props: TreeItemProps) {
           opacity: isDragging ? 0.4 : 1,
           background: isDragOver ? "rgba(200,169,110,0.12)" : undefined,
           outline: isDragOver ? "1px dashed rgba(200,169,110,0.4)" : undefined,
+          position: "relative",
         }}
         onClick={() => isDir ? onToggleDir(entry.path) : onSelectFile(entry.path)}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(e, entry); }}
+        onMouseEnter={() => onHoverChange(entry.path)}
+        onMouseLeave={() => onHoverChange(null)}
         title={entry.path}
-        /* Drag source (files only) */
-        draggable={!isDir}
+        /* All nodes are draggable */
+        draggable
         onDragStart={(e) => {
           e.dataTransfer.effectAllowed = "move";
           e.dataTransfer.setData("text/plain", entry.path);
@@ -327,6 +335,39 @@ function TreeItem(props: TreeItemProps) {
         ) : (
           <span className="tree-name">{entry.name}</span>
         )}
+
+        {/* ── Folder hover quick-actions ── */}
+        {isDir && (
+          <span
+            style={{
+              display: "flex", alignItems: "center", gap: 1,
+              marginLeft: "auto", paddingRight: 4,
+              opacity: isHovered ? 1 : 0,
+              pointerEvents: isHovered ? "auto" : "none",
+              transition: "opacity 0.12s ease",
+              flexShrink: 0,
+            }}
+          >
+            {/* New File inside this folder */}
+            <button
+              title={`New file in ${entry.name}`}
+              className="icon-btn"
+              style={{ padding: "1px 3px", minWidth: 20 }}
+              onClick={(e) => { e.stopPropagation(); onQuickCreate(entry.path, false); }}
+            >
+              <IconNewFile />
+            </button>
+            {/* New Folder inside this folder */}
+            <button
+              title={`New folder in ${entry.name}`}
+              className="icon-btn"
+              style={{ padding: "1px 3px", minWidth: 20 }}
+              onClick={(e) => { e.stopPropagation(); onQuickCreate(entry.path, true); }}
+            >
+              <IconNewFolder />
+            </button>
+          </span>
+        )}
       </div>
 
       {/* Children */}
@@ -364,6 +405,10 @@ export default function ProjectTree({
   // Drag state
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
   const [dragOverDir,  setDragOverDir]  = useState<string | null>(null);
+  const [dragOverRoot, setDragOverRoot] = useState(false);
+
+  // Hover state for quick-action buttons
+  const [hoveredPath, setHoveredPath] = useState<string | null>(null);
 
   // ── Load root ──────────────────────────────────────────────────────────────
   const loadRoot = useCallback(async () => {
@@ -524,8 +569,8 @@ export default function ProjectTree({
 
   // ── Drag-and-drop ──────────────────────────────────────────────────────────
   const handleDragStart   = useCallback((path: string) => setDraggingPath(path), []);
-  const handleDragEnd     = useCallback(() => { setDraggingPath(null); setDragOverDir(null); }, []);
-  const handleDragEnterDir = useCallback((path: string) => setDragOverDir(path), []);
+  const handleDragEnd     = useCallback(() => { setDraggingPath(null); setDragOverDir(null); setDragOverRoot(false); }, []);
+  const handleDragEnterDir = useCallback((path: string) => { setDragOverDir(path); setDragOverRoot(false); }, []);
   const handleDragLeaveDir = useCallback(() => setDragOverDir(null), []);
 
   const handleDropToDir = useCallback(async (dirPath: string) => {
@@ -554,10 +599,17 @@ export default function ProjectTree({
     onSelect(path);
   }, [rootEntries, dirContents, onSelect]);
 
+  // ── Quick create from folder hover button ─────────────────────────────────
+  const handleQuickCreate = useCallback((parentPath: string, isFolder: boolean) => {
+    setInputValue("");
+    setOpError(null);
+    setDialog({ type: "create", parentPath, isFolder });
+  }, []);
+
   // ── Shared TreeItem props ──────────────────────────────────────────────────
   const sharedProps = {
     project, expandedDirs, dirContents, loadingDirs, selectedFile, inlineRename,
-    draggingPath, dragOverDir,
+    draggingPath, dragOverDir, hoveredPath,
     onToggleDir: handleToggleDir,
     onSelectFile: handleSelectFile,
     onContextMenu: handleContextMenu,
@@ -569,6 +621,8 @@ export default function ProjectTree({
     onDragEnterDir: handleDragEnterDir,
     onDragLeaveDir: handleDragLeaveDir,
     onDropToDir: handleDropToDir,
+    onHoverChange: setHoveredPath,
+    onQuickCreate: handleQuickCreate,
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -602,8 +656,34 @@ export default function ProjectTree({
         </button>
       </div>
 
-      {/* ── Tree ── */}
-      <div style={{ flex: 1, overflowY: "auto", overflowX: "hidden", fontSize: "0.875rem" }}>
+      {/* ── Tree — also acts as root drop zone ── */}
+      <div
+        style={{
+          flex: 1, overflowY: "auto", overflowX: "hidden", fontSize: "0.875rem",
+          outline: dragOverRoot ? "2px dashed rgba(200,169,110,0.5)" : "2px dashed transparent",
+          outlineOffset: -2,
+          transition: "outline-color 0.1s ease",
+        }}
+        onDragOver={(e) => {
+          if (!draggingPath) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          // Only show root highlight if not hovering a child dir node
+          if (!dragOverDir) setDragOverRoot(true);
+        }}
+        onDragLeave={(e) => {
+          // Only clear if leaving the container itself (not entering a child)
+          if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+            setDragOverRoot(false);
+          }
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOverRoot(false);
+          // Only fire root drop if NOT already handled by a child dir node
+          if (!dragOverDir) handleDropToDir("");
+        }}
+      >
         {rootLoading ? (
           <div style={{ padding: "8px 0" }}>
             {[...Array(5)].map((_, i) => (
@@ -623,6 +703,22 @@ export default function ProjectTree({
             .map((entry) => (
               <TreeItem key={entry.path} entry={entry} depth={0} {...sharedProps}/>
             ))
+        )}
+        {/* Root drop label — shows while dragging */}
+        {draggingPath && !dragOverDir && (
+          <div style={{
+            margin: "4px 8px",
+            padding: "5px 10px",
+            borderRadius: "var(--r-sm)",
+            fontSize: "0.75rem",
+            color: "var(--lamp)",
+            opacity: dragOverRoot ? 1 : 0.4,
+            transition: "opacity 0.15s",
+            pointerEvents: "none",
+            fontFamily: "var(--font-mono)",
+          }}>
+            ↙ Drop here to move to root
+          </div>
         )}
       </div>
 
