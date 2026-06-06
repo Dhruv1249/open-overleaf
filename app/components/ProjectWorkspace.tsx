@@ -154,6 +154,8 @@ export default function ProjectWorkspace({ project }: { project: string }) {
             project={project}
             onSelect={loadFile}
             selectedFile={selectedFile}
+            rootFile={null}
+            onSetRootFile={() => {}}
           />
         </div>
       </div>

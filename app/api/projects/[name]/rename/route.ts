@@ -2,10 +2,10 @@ import { NextResponse, NextRequest } from "next/server";
 import {
   getFileMeta,
   putFileAtPath,
+  putBinaryAtPath,
   deleteFileAtPath,
   listAllFilesInDir,
   deleteDirectoryAtPath,
-  readFileAtPath,
 } from "@/lib/github";
 import { verifySessionFromRequest } from "@/lib/session";
 
@@ -40,14 +40,28 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
 
       for (const { path: srcFullPath } of files) {
         // srcFullPath is full repo-relative, e.g. "project/olddir/sub/file.tex"
-        const content = await readFileAtPath(srcFullPath, req as unknown as Request) ?? "";
+        const srcMeta = await getFileMeta(srcFullPath, req as unknown as Request);
+        if (Array.isArray(srcMeta) || srcMeta?.type !== "file" || srcMeta.content == null) continue;
+        
+        const rawBase64 = srcMeta.content.replace(/\n/g, "");
+        const buffer = Buffer.from(rawBase64, "base64");
+
         // Replace the old dir prefix with the new dir prefix
         const destFullPath = srcFullPath.replace(fullFrom, fullTo);
-        await putFileAtPath(
+
+        // Fetch destination SHA if it exists, to avoid 422 error
+        let destSha: string | undefined;
+        try {
+          const destMeta = await getFileMeta(destFullPath, req as unknown as Request);
+          if (destMeta && !Array.isArray(destMeta)) destSha = destMeta.sha;
+        } catch {/* file doesn't exist yet */}
+
+        await putBinaryAtPath(
           destFullPath,
-          content,
+          buffer,
           `Move ${srcFullPath} → ${destFullPath}`,
-          req as unknown as Request
+          req as unknown as Request,
+          destSha
         );
       }
 
@@ -57,14 +71,21 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
       return NextResponse.json({ ok: true });
     } else {
       // ── Single file move ──────────────────────────────────────────────────────
-      if (!meta?.sha)
+      if (!meta?.sha || meta.content == null)
         return NextResponse.json({ ok: false, error: "source file not found" }, { status: 404 });
-      const content = meta.content
-        ? Buffer.from(meta.content, "base64").toString("utf8")
-        : "";
+      
+      const rawBase64 = meta.content.replace(/\n/g, "");
+      const buffer = Buffer.from(rawBase64, "base64");
+
+      // Fetch destination SHA if it exists
+      let destSha: string | undefined;
+      try {
+        const destMeta = await getFileMeta(fullTo, req as unknown as Request);
+        if (destMeta && !Array.isArray(destMeta)) destSha = destMeta.sha;
+      } catch {/* file doesn't exist yet */}
 
       // 1. Write to the new path
-      await putFileAtPath(fullTo, content, `Rename ${fromPath} → ${toPath}`, req as unknown as Request);
+      await putBinaryAtPath(fullTo, buffer, `Rename ${fromPath} → ${toPath}`, req as unknown as Request, destSha);
 
       // 2. Delete the old path (using sha we already fetched)
       await deleteFileAtPath(fullFrom, `Delete ${fromPath} (renamed)`, meta.sha, req as unknown as Request);

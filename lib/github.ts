@@ -80,6 +80,24 @@ export async function putFileAtPath(
   return ghFetch(`/contents/${encodePath(path)}`, req, { method: "PUT", body });
 }
 
+/** Binary-safe variant — accepts a Buffer instead of a string. */
+export async function putBinaryAtPath(
+  path: string,
+  buffer: Buffer,
+  message: string,
+  req: Request,
+  sha?: string
+) {
+  const body: any = {
+    message: message || `Upload ${path}`,
+    content: buffer.toString("base64"),
+    branch: process.env.DEFAULT_BRANCH || "main",
+  };
+  if (sha) body.sha = sha;
+  return ghFetch(`/contents/${encodePath(path)}`, req, { method: "PUT", body });
+}
+
+
 export async function deleteFileAtPath(
   path: string,
   message: string,

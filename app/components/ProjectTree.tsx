@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Entry  = { name: string; path: string; type: "file" | "dir" };
@@ -106,6 +106,25 @@ function IconRefresh() {
     </svg>
   );
 }
+function IconUpload() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2.5 10.5v2.5h11v-2.5"/>
+      <path d="M8 9.5V3"/>
+      <path d="M5 5.5L8 3L11 5.5"/>
+    </svg>
+  );
+}
+function IconUploadFolder() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1.5 6v6.5h13V6"/>
+      <path d="M1.5 4L6 4L7.5 5.5L14.5 5.5V6"/>
+      <path d="M8 10V5.5"/>
+      <path d="M5.5 7.5L8 5.5L10.5 7.5"/>
+    </svg>
+  );
+}
 function IconChevronRight() {
   return (
     <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round">
@@ -143,12 +162,13 @@ function ContextMenu({ menu, onClose, onAction }: {
 
   if (!menu) return null;
   const x = Math.min(menu.x, window.innerWidth  - 190);
-  const y = Math.min(menu.y, window.innerHeight - 220);
-  const isDir = menu.entry.type === "dir";
+  const y = Math.min(menu.y, window.innerHeight - 240);
+  const isDir  = menu.entry.type === "dir";
+  const isTex  = !isDir && menu.entry.name.endsWith(".tex");
 
-  const item = (label: string, action: string, danger = false) => (
+  const item = (label: string, action: string, danger = false, accent = false) => (
     <div key={action} className="ctx-menu-item"
-      style={danger ? { color: "var(--ink-danger)" } : {}}
+      style={danger ? { color: "var(--ink-danger)" } : accent ? { color: "var(--lamp)" } : {}}
       onMouseDown={(e) => { e.preventDefault(); onAction(action); onClose(); }}>
       {label}
     </div>
@@ -157,6 +177,7 @@ function ContextMenu({ menu, onClose, onAction }: {
   return (
     <div className="ctx-menu" style={{ left: x, top: y }}>
       {isDir && <>{item("New File",   "new-file")}{item("New Folder","new-folder")}<div className="ctx-menu-sep"/></>}
+      {isTex && <>{item("⊙ Set as root file", "set-root", false, true)}<div className="ctx-menu-sep"/></>}
       {item("Rename (F2)", "rename")}
       {!isDir && item("Move to…", "move")}
       <div className="ctx-menu-sep"/>
@@ -229,6 +250,7 @@ interface TreeItemProps {
   entry: Entry;
   depth: number;
   project: string;
+  rootFile: string | null;
   expandedDirs: Set<string>;
   dirContents: Map<string, Entry[]>;
   loadingDirs: Set<string>;
@@ -255,6 +277,7 @@ interface TreeItemProps {
 function TreeItem(props: TreeItemProps) {
   const {
     entry, depth, project,
+    rootFile,
     expandedDirs, dirContents, loadingDirs,
     selectedFile, inlineRename,
     draggingPath, dragOverDir, hoveredPath,
@@ -272,6 +295,8 @@ function TreeItem(props: TreeItemProps) {
   const isDragging = draggingPath === entry.path;
   const isDragOver = isDir && dragOverDir === entry.path;
   const isHovered  = hoveredPath === entry.path;
+  const relPath = entry.path.startsWith(`${project}/`) ? entry.path.slice(project.length + 1) : entry.path;
+  const isRoot     = !isDir && rootFile === relPath;
   const children   = dirContents.get(entry.path);
   const indent     = depth * 12;
 
@@ -333,7 +358,18 @@ function TreeItem(props: TreeItemProps) {
             className="tree-rename-input"
           />
         ) : (
-          <span className="tree-name">{entry.name}</span>
+          <span className="tree-name">
+            {entry.name}
+            {isRoot && (
+              <span title="Compile root file" style={{
+                marginLeft: 5, fontSize: "0.6rem", fontWeight: 700,
+                color: "var(--lamp)", opacity: 0.9,
+                background: "rgba(200,169,110,0.15)",
+                border: "1px solid rgba(200,169,110,0.3)",
+                borderRadius: 3, padding: "0 3px", verticalAlign: "middle",
+              }}>ROOT</span>
+            )}
+          </span>
         )}
 
         {/* ── Folder hover quick-actions ── */}
@@ -384,10 +420,13 @@ function TreeItem(props: TreeItemProps) {
 // ── Main component ────────────────────────────────────────────────────────────
 export default function ProjectTree({
   project, selectedFile, onSelect,
+  rootFile, onSetRootFile,
 }: {
   project: string;
   selectedFile: string | null;
   onSelect: (path: string) => void;
+  rootFile: string | null;
+  onSetRootFile: (path: string) => void;
 }) {
   const [rootEntries, setRootEntries] = useState<Entry[] | null>(null);
   const [rootLoading, setRootLoading] = useState(true);
@@ -413,6 +452,13 @@ export default function ProjectTree({
 
   // Hover state for quick-action buttons
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
+
+  // Upload state
+  const [uploadWorking, setUploadWorking] = useState(false);
+  const [uploadResults, setUploadResults] = useState<{ path: string; ok: boolean; error?: string }[] | null>(null);
+  const [osDropActive,  setOsDropActive]  = useState(false);  // OS-file drag over panel
+  const fileInputRef   = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   // ── Load root ──────────────────────────────────────────────────────────────
   const loadRoot = useCallback(async () => {
@@ -478,8 +524,34 @@ export default function ProjectTree({
       setDialog({ type: "delete", entry });
     } else if (action === "move") {
       setInputValue(entry.path); setDialog({ type: "move", entry });
+    } else if (action === "set-root") {
+      const rel = entry.path.startsWith(`${project}/`)
+        ? entry.path.slice(project.length + 1)
+        : entry.path;
+      onSetRootFile(rel);
     }
-  }, [ctxMenu]);
+  }, [ctxMenu, project, onSetRootFile]);
+
+  // ── File upload ──────────────────────────────────────────────────────────────
+  const handleUpload = useCallback(async (fileList: FileList, targetDir = "") => {
+    if (!fileList.length) return;
+    setUploadWorking(true);
+    const form = new FormData();
+    form.append("targetDir", targetDir);
+    Array.from(fileList).forEach(f => form.append("files", f));
+    try {
+      const res  = await fetch(`/api/projects/${encodeURIComponent(project)}/upload`, {
+        method: "POST", body: form,
+      });
+      const data = await res.json();
+      setUploadResults(data.results ?? []);
+      await refreshTree();
+    } catch (e: any) {
+      setUploadResults([{ path: "(request failed)", ok: false, error: e.message }]);
+    } finally {
+      setUploadWorking(false);
+    }
+  }, [project, refreshTree]);
 
   // ── Inline rename (optimistic) ─────────────────────────────────────────────
   const submitInlineRename = useCallback(async () => {
@@ -720,7 +792,7 @@ export default function ProjectTree({
 
   // ── Shared TreeItem props ──────────────────────────────────────────────────
   const sharedProps = {
-    project, expandedDirs, dirContents, loadingDirs, selectedFile, inlineRename,
+    project, rootFile, expandedDirs, dirContents, loadingDirs, selectedFile, inlineRename,
     draggingPath, dragOverDir, hoveredPath,
     onToggleDir: handleToggleDir,
     onSelectFile: handleSelectFile,
@@ -763,20 +835,50 @@ export default function ProjectTree({
           onClick={() => { setInputValue(""); setDialog({ type: "create", parentPath: "", isFolder: true }); }}>
           <IconNewFolder/>
         </button>
+        {/* Separator */}
+        <span style={{ width: 1, height: 12, background: "var(--rule-faint)", margin: "0 2px", display: "inline-block" }}/>
+        <button className="icon-btn" title="Upload files" disabled={uploadWorking}
+          onClick={() => fileInputRef.current?.click()}>
+          <IconUpload/>
+        </button>
+        <button className="icon-btn" title="Upload folder" disabled={uploadWorking}
+          onClick={() => folderInputRef.current?.click()}>
+          <IconUploadFolder/>
+        </button>
+        {/* Separator */}
+        <span style={{ width: 1, height: 12, background: "var(--rule-faint)", margin: "0 2px", display: "inline-block" }}/>
         <button className="icon-btn" title="Refresh" onClick={refreshTree}>
           <IconRefresh/>
         </button>
       </div>
 
-      {/* ── Tree — also acts as root drop zone ── */}
+      {/* Hidden file inputs */}
+      <input ref={fileInputRef} type="file" multiple style={{ display: "none" }}
+        onChange={e => { if (e.target.files) handleUpload(e.target.files); e.target.value = ""; }}
+      />
+      <input ref={folderInputRef} type="file" style={{ display: "none" }}
+        // @ts-ignore — webkitdirectory is not in standard TS types
+        webkitdirectory="true" multiple
+        onChange={e => { if (e.target.files) handleUpload(e.target.files); e.target.value = ""; }}
+      />
+
+      {/* ── Tree — also acts as root drop zone and OS-file drop zone ── */}
       <div
         style={{
-          flex: 1, overflowY: "auto", overflowX: "hidden", fontSize: "0.875rem",
-          outline: dragOverRoot ? "2px dashed rgba(200,169,110,0.5)" : "2px dashed transparent",
+          flex: 1, overflowY: "auto", overflowX: "hidden", fontSize: "0.875rem", position: "relative",
+          outline: (dragOverRoot || osDropActive) ? "2px dashed rgba(200,169,110,0.5)" : "2px dashed transparent",
           outlineOffset: -2,
           transition: "outline-color 0.1s ease",
         }}
         onDragOver={(e) => {
+          // OS file drag (no draggingPath set) vs internal file move
+          const hasFiles = Array.from(e.dataTransfer.types).includes("Files");
+          if (hasFiles && !draggingPath) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            setOsDropActive(true);
+            return;
+          }
           if (!draggingPath) return;
           e.preventDefault();
           e.dataTransfer.dropEffect = "move";
@@ -787,15 +889,35 @@ export default function ProjectTree({
           // Only clear if leaving the container itself (not entering a child)
           if (!e.currentTarget.contains(e.relatedTarget as Node)) {
             setDragOverRoot(false);
+            setOsDropActive(false);
           }
         }}
         onDrop={(e) => {
           e.preventDefault();
           setDragOverRoot(false);
-          // Only fire root drop if NOT already handled by a child dir node
+          setOsDropActive(false);
+          // OS-file drop
+          if (e.dataTransfer.files?.length && !draggingPath) {
+            handleUpload(e.dataTransfer.files);
+            return;
+          }
+          // Internal move drop
           if (!dragOverDir) handleDropToDir("");
         }}
       >
+        {/* OS drag-drop overlay hint */}
+        {osDropActive && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 10,
+            background: "rgba(200,169,110,0.07)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            pointerEvents: "none",
+          }}>
+            <span style={{ fontSize: "0.8125rem", color: "var(--lamp)", fontWeight: 600 }}>
+              Drop to upload
+            </span>
+          </div>
+        )}
         {rootLoading ? (
           <div style={{ padding: "8px 0" }}>
             {[...Array(5)].map((_, i) => (
@@ -942,7 +1064,73 @@ export default function ProjectTree({
           </div>
         </div>
       )}
+
+      {/* ── Upload working spinner ── */}
+      {uploadWorking && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 3000,
+          background: "rgba(0,0,0,0.35)", backdropFilter: "blur(3px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <div style={{
+            background: "var(--ink-raised)", border: "1px solid var(--rule-soft)",
+            borderRadius: "var(--r-md)", padding: "28px 36px",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 14,
+          }}>
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" stroke="var(--lamp)" strokeWidth={2.5} strokeLinecap="round"
+              style={{ animation: "spin 0.8s linear infinite" }}>
+              <path d="M16 4 A12 12 0 1 1 4 16"/>
+            </svg>
+            <span style={{ fontSize: "0.875rem", color: "var(--quill-secondary)", fontWeight: 500 }}>Uploading to GitHub…</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Upload results modal ── */}
+      {uploadResults && !uploadWorking && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 3000,
+          background: "rgba(0,0,0,0.45)", backdropFilter: "blur(3px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }} onClick={() => setUploadResults(null)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: "var(--ink-raised)", border: "1px solid var(--rule-soft)",
+            borderRadius: "var(--r-md)", padding: "24px 28px", maxWidth: 420, width: "90%",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.5)", maxHeight: "70vh", display: "flex", flexDirection: "column",
+          }}>
+            <h4 style={{ margin: "0 0 14px", fontSize: "0.9375rem", color: "var(--quill-primary)", fontWeight: 600 }}>
+              Upload results
+            </h4>
+            <div style={{ overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+              {uploadResults.map((r, i) => (
+                <div key={i} style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "5px 8px", borderRadius: "var(--r-sm)",
+                  background: r.ok ? "rgba(52,168,83,0.07)" : "rgba(176,82,82,0.1)",
+                  fontSize: "0.8125rem",
+                }}>
+                  <span style={{ color: r.ok ? "var(--ink-success)" : "var(--ink-danger)", fontWeight: 700, fontSize: "1em" }}>
+                    {r.ok ? "✓" : "✗"}
+                  </span>
+                  <span style={{ fontFamily: "var(--font-mono)", color: "var(--quill-secondary)", flex: 1, wordBreak: "break-all" }}>
+                    {r.path}
+                  </span>
+                  {r.error && (
+                    <span style={{ color: "var(--ink-danger)", fontSize: "0.75rem" }}>{r.error}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+              <button className="btn-sm" onClick={() => setUploadResults(null)}
+                style={{ background: "var(--lamp-dim)", borderColor: "rgba(200,169,110,0.3)", color: "var(--lamp)" }}>
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-

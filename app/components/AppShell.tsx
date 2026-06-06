@@ -80,6 +80,8 @@ const DEFAULT_SETTINGS = {
   mode:            "debounced"  as CompileMode,
   intervalSeconds: 30,
   autoSaveSeconds: 3,
+  compileTarget:   "current"   as "current" | "root",
+  rootFile:        null        as string | null,
 };
 
 
@@ -111,8 +113,11 @@ function PdfPanel({
   settings: typeof DEFAULT_SETTINGS;
   onSettingsChange: (s: typeof DEFAULT_SETTINGS) => void;
 }) {
-  const pdfSrc = project && mainFile && pdfKey > 0
-    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}`
+  const relMf = mainFile ? ((project && mainFile.startsWith(`${project}/`)) ? mainFile.slice(project.length + 1) : mainFile) : null;
+  const targetFile = (settings.compileTarget === "root" && settings.rootFile) ? settings.rootFile : relMf;
+
+  const pdfSrc = project && targetFile && pdfKey > 0
+    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}`
     : null;
 
   const spinning = compileState === "syncing" || compileState === "compiling";
@@ -472,6 +477,25 @@ function PdfPanel({
           </select>
         </div>
 
+        {/* Compile Target */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile Target</span>
+          <select
+            value={settings.compileTarget}
+            onChange={e => onSettingsChange({ ...settings, compileTarget: e.target.value as "current" | "root" })}
+            style={{
+              background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+              borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+              fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+              cursor: "pointer", outline: "none", padding: "2px 6px",
+              maxWidth: 140, textOverflow: "ellipsis", whiteSpace: "nowrap"
+            }}
+          >
+            <option value="current">Current file</option>
+            <option value="root">Root: {settings.rootFile || "not set"}</option>
+          </select>
+        </div>
+
         {/* Compile mode */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
           <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile</span>
@@ -737,7 +761,10 @@ export default function AppShell() {
       const proj = currentProject.current;
       const file = currentFile.current;
       if (!proj || !file || !file.endsWith(".tex")) return;
-      compile(proj, file, [{ path: file, content: currentContent.current }]);
+      const s = settingsRef.current;
+      const relFile = file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
+      const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relFile;
+      compile(proj, compileFile, [{ path: relFile, content: currentContent.current }]);
     }, delay);
   }, [compile]);
 
@@ -748,7 +775,10 @@ export default function AppShell() {
       const proj = currentProject.current;
       const file = currentFile.current;
       if (!proj || !file || !file.endsWith(".tex")) return;
-      compile(proj, file, [{ path: file, content: currentContent.current }]);
+      const s = settingsRef.current;
+      const relFile = file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
+      const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relFile;
+      compile(proj, compileFile, [{ path: relFile, content: currentContent.current }]);
     }, compilerSettings.intervalSeconds * 1000);
     return () => clearInterval(id);
   }, [compile, compilerSettings.mode, compilerSettings.intervalSeconds]);
@@ -760,7 +790,11 @@ export default function AppShell() {
     const mf   = currentMainFile.current;
     const file = currentFile.current;
     if (!proj || !mf) return;
-    compile(proj, mf, file ? [{ path: file, content: currentContent.current }] : []);
+    const s = settingsRef.current;
+    const relMf = mf.startsWith(`${proj}/`) ? mf.slice(proj.length + 1) : mf;
+    const relFile = file && file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
+    const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relMf;
+    compile(proj, compileFile, relFile ? [{ path: relFile, content: currentContent.current }] : []);
   }, [compile]);
 
   // ── Content change (every keystroke) ─────────────────────────────────────
@@ -780,9 +814,13 @@ export default function AppShell() {
   // ── Download ──────────────────────────────────────────────────────────────
   const handleDownload = useCallback(() => {
     if (!project || !mainFile || pdfKey === 0) return;
+    const s = settingsRef.current;
+    const relMf = mainFile.startsWith(`${project}/`) ? mainFile.slice(project.length + 1) : mainFile;
+    const targetFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relMf;
+
     const a = document.createElement("a");
-    a.href = `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&download=1&t=${pdfKey}`;
-    a.download = mainFile.replace(/\.tex$/, ".pdf");
+    a.href = `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&download=1&t=${pdfKey}`;
+    a.download = targetFile.replace(/\.tex$/, ".pdf").split("/").pop() || "document.pdf";
     a.click();
   }, [project, mainFile, pdfKey]);
 
@@ -794,6 +832,8 @@ export default function AppShell() {
     setSelectedFile(null);
     setFileContent("");
     setSaveState("idle");
+    // Fire-and-forget: sync all project files to /tmp/oo-workspace for TexLab
+    fetch(`/api/projects/${encodeURIComponent(name)}/sync-workspace`, { method: "POST" }).catch(() => {});
   }, []);
 
   // ── File open ─────────────────────────────────────────────────────────────
@@ -974,7 +1014,10 @@ export default function AppShell() {
                   project={project}
                   selectedFile={selectedFile}
                   onSelect={handleSelectFile}
+                  rootFile={compilerSettings.rootFile}
+                  onSetRootFile={(p) => setCompilerSettings(s => ({ ...s, rootFile: p }))}
                 />
+
               </div>
             </div>
           ) : (
