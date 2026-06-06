@@ -406,6 +406,10 @@ export default function ProjectTree({
   const [draggingPath, setDraggingPath] = useState<string | null>(null);
   const [dragOverDir,  setDragOverDir]  = useState<string | null>(null);
   const [dragOverRoot, setDragOverRoot] = useState(false);
+  // Pending drag-drop move — shows confirmation before executing
+  const [pendingMove,  setPendingMove]  = useState<{
+    fromPath: string; toPath: string; dirPath: string; fileName: string;
+  } | null>(null);
 
   // Hover state for quick-action buttons
   const [hoveredPath, setHoveredPath] = useState<string | null>(null);
@@ -642,50 +646,49 @@ export default function ProjectTree({
   const handleDragEnterDir = useCallback((path: string) => { setDragOverDir(path); setDragOverRoot(false); }, []);
   const handleDragLeaveDir = useCallback(() => setDragOverDir(null), []);
 
-  const handleDropToDir = useCallback(async (dirPath: string) => {
+  // Capture the drag-drop intent — shows confirmation before any state mutation
+  const handleDropToDir = useCallback((dirPath: string) => {
     const fromPath = draggingPath;
-    setDraggingPath(null); setDragOverDir(null);
+    setDraggingPath(null); setDragOverDir(null); setDragOverRoot(false);
     if (!fromPath) return;
     const fileName = fromPath.split("/").pop()!;
     const toPath   = dirPath ? `${dirPath}/${fileName}` : fileName;
     if (toPath === fromPath) return;
+    setPendingMove({ fromPath, toPath, dirPath, fileName });
+  }, [draggingPath]);
+
+  // Execute the confirmed move (optimistic update + GitHub sync)
+  const confirmMove = useCallback(async () => {
+    if (!pendingMove) return;
+    const { fromPath, toPath, dirPath, fileName } = pendingMove;
+    setPendingMove(null);
     setOpError(null);
 
-    // ── Find movedEntry SYNCHRONOUSLY from current state (before any setState) ──
-    let movedEntry: Entry | undefined =
-      rootEntries?.find(e => e.path === fromPath);
+    // Find the entry synchronously before any setState
+    let movedEntry: Entry | undefined = rootEntries?.find(e => e.path === fromPath);
     if (!movedEntry) {
       for (const v of dirContents.values()) {
         const found = v.find(e => e.path === fromPath);
         if (found) { movedEntry = found; break; }
       }
     }
-
     const snapshotRoot = rootEntries;
     const snapshotDirs = new Map(dirContents);
     const updatedEntry: Entry = movedEntry
       ? { ...movedEntry, name: fileName, path: toPath }
       : { name: fileName, path: toPath, type: "file" };
 
-    // ── Root entries: remove old location + add to root if target is root ────
     setRootEntries(prev => {
       const without = prev?.filter(e => e.path !== fromPath) ?? [];
       return dirPath ? without : [...without, updatedEntry];
     });
-
-    // ── Dir contents: remove from all dirs + add to target dir if open ───────
     setDirContents(prev => {
       const next = new Map(prev);
-      for (const [k, v] of next) {
-        next.set(k, v.filter(e => e.path !== fromPath));
-      }
-      if (dirPath && next.has(dirPath)) {
-        next.set(dirPath, [...(next.get(dirPath) || []), updatedEntry]);
-      }
+      for (const [k, v] of next) next.set(k, v.filter(e => e.path !== fromPath));
+      if (dirPath && next.has(dirPath)) next.set(dirPath, [...(next.get(dirPath) || []), updatedEntry]);
       return next;
     });
 
-    // ── Background sync ──────────────────────────────────────────────────────
     try {
       const res  = await fetch(`/api/projects/${encodeURIComponent(project)}/rename`, {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -694,12 +697,11 @@ export default function ProjectTree({
       const data = await res.json();
       if (!data.ok) throw new Error(data.error || "Move failed");
     } catch (e: any) {
-      // Revert on failure
       setRootEntries(snapshotRoot);
       setDirContents(snapshotDirs);
       setOpError(e.message);
     }
-  }, [draggingPath, project, rootEntries, dirContents]);
+  }, [pendingMove, project, rootEntries, dirContents]);
 
 
   // ── Select guard ───────────────────────────────────────────────────────────
@@ -892,6 +894,55 @@ export default function ProjectTree({
             confirmLabel={working ? "Moving…" : "Move"} disabled={working || !inputValue.trim()}/>
         </Modal>
       )}
+
+      {/* ── Drag-drop confirmation modal ── */}
+      {pendingMove && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 2000,
+          background: "rgba(0,0,0,0.45)", backdropFilter: "blur(3px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }} onClick={() => setPendingMove(null)}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: "var(--ink-raised)", border: "1px solid var(--rule-soft)",
+              borderRadius: "var(--r-md)", padding: "24px 28px", maxWidth: 360, width: "90%",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+            }}
+          >
+            <h4 style={{ margin: "0 0 12px", fontSize: "0.9375rem", color: "var(--quill-primary)", fontWeight: 600 }}>
+              Move file?
+            </h4>
+            <p style={{ margin: "0 0 6px", fontSize: "0.8125rem", color: "var(--quill-secondary)", lineHeight: 1.6 }}>
+              Move{" "}
+              <code style={{ fontFamily: "var(--font-mono)", fontSize: "0.8125rem", color: "var(--lamp)", background: "rgba(200,169,110,0.12)", padding: "1px 5px", borderRadius: 3 }}>
+                {pendingMove.fileName}
+              </code>
+            </p>
+            <p style={{ margin: "0 0 20px", fontSize: "0.8125rem", color: "var(--quill-secondary)", lineHeight: 1.6 }}>
+              to{" "}
+              <code style={{ fontFamily: "var(--font-mono)", fontSize: "0.8125rem", color: "var(--lamp)", background: "rgba(200,169,110,0.12)", padding: "1px 5px", borderRadius: 3 }}>
+                {pendingMove.dirPath ? `${pendingMove.dirPath}/` : "/ (project root)"}
+              </code>
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button
+                className="btn-sm btn-ghost"
+                onClick={() => setPendingMove(null)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-sm btn-primary"
+                onClick={confirmMove}
+              >
+                Move
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+

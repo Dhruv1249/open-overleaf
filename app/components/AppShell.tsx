@@ -711,7 +711,7 @@ export default function AppShell() {
       <div
         className="app-body"
         data-tab={mobileTab}
-        style={{ display: "flex", gridTemplateColumns: undefined }}
+        style={{ display: "flex", gridTemplateColumns: undefined, position: "relative" }}
       >
 
         {/* ── Left rail ── */}
@@ -758,25 +758,15 @@ export default function AppShell() {
               <p className="editor-empty-label">Loading file</p>
             </div>
           ) : selectedFile ? (
-            <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-              <Editor
-                key={`${selectedFile}-${editorRestoreKey}`}
-                content={fileContent}
-                onSave={handleSaveFile}
-                onContentChange={handleContentChange}
-                filename={filename}
-                project={project ?? undefined}
-                filePath={selectedFile ?? undefined}
-              />
-              {showHistory && selectedFile && project && (
-                <VersionHistory
-                  project={project}
-                  filePath={selectedFile}
-                  onRestore={handleRestore}
-                  onClose={() => setShowHistory(false)}
-                />
-              )}
-            </div>
+            <Editor
+              key={`${selectedFile}-${editorRestoreKey}`}
+              content={fileContent}
+              onSave={handleSaveFile}
+              onContentChange={handleContentChange}
+              filename={filename}
+              project={project ?? undefined}
+              filePath={selectedFile ?? undefined}
+            />
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>
               <span className="serif editor-empty-glyph" style={{ fontSize: "0.9375rem", color: "var(--rule-emphasis)", fontStyle: "italic" }}>
@@ -860,6 +850,24 @@ export default function AppShell() {
           settings={compilerSettings}
           onSettingsChange={setCompilerSettings}
         />
+
+        {/* ── Version history overlay — covers full body for wide diff view ── */}
+        {showHistory && selectedFile && project && (
+          <VersionHistory
+            project={project}
+            filePath={selectedFile}
+            mainFile={mainFile}
+            currentContent={fileContent}
+            currentPdfSrc={
+              project && mainFile && pdfKey > 0
+                ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}`
+                : null
+            }
+            engine={compilerSettings.engine}
+            onRestore={handleRestore}
+            onClose={() => setShowHistory(false)}
+          />
+        )}
       </div>
 
       {/* ── Mobile navigation bar ── */}
