@@ -6,6 +6,7 @@ import UserStatus from "./UserStatus";
 import ProjectsList from "./ProjectsList";
 import ProjectTree from "./ProjectTree";
 import Editor from "./Editor";
+import VersionHistory from "./VersionHistory";
 
 // ── Drag handle between panels ────────────────────────────────────────────────
 function DragHandle({ onDrag }: { onDrag: (dx: number) => void }) {
@@ -388,6 +389,10 @@ export default function AppShell() {
 
   // Mobile tab
   const [mobileTab, setMobileTab] = useState<"files"|"editor"|"preview">("editor");
+  // Version history panel
+  const [showHistory,       setShowHistory]       = useState(false);
+  // Bumped on version restore to force Editor remount with restored content
+  const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
 
   // Compiler settings
   const [compilerSettings, setCompilerSettings] = useState(DEFAULT_SETTINGS);
@@ -548,6 +553,8 @@ export default function AppShell() {
 
   // ── Project select ────────────────────────────────────────────────────────
   const handleSelectProject = useCallback((name: string) => {
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
     setProject(name);
     setSelectedFile(null);
     setFileContent("");
@@ -557,8 +564,9 @@ export default function AppShell() {
   // ── File open ─────────────────────────────────────────────────────────────
   const handleSelectFile = useCallback(async (filePath: string) => {
     if (!project) return;
-    // Clear auto-compile timer from previous file
+    // Clear pending timers from previous file
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
+    if (autoSaveTimer.current)    clearTimeout(autoSaveTimer.current);
 
     setSelectedFile(filePath);
     setFileLoading(true);
@@ -619,6 +627,40 @@ export default function AppShell() {
 
   // Keep save ref in sync so auto-save timer always calls the latest version
   useEffect(() => { saveFileRef.current = handleSaveFile; }, [handleSaveFile]);
+
+  // ── Version restore ─────────────────────────────────────────────────────
+  const handleRestore = useCallback(async (restoredContent: string, sha: string) => {
+    if (!project || !selectedFile) return;
+    // Save restored content to GitHub with a descriptive message
+    setSaveState("saving");
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/file`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          path: selectedFile,
+          content: restoredContent,
+          message: `Revert to ${sha.slice(0, 7)} via Open Overleaf`,
+        }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        // Update baseline content and force Editor remount to show restored version
+        setFileContent(restoredContent);
+        currentContent.current = restoredContent;
+        setEditorRestoreKey(k => k + 1);
+        setShowHistory(false);
+        setSaveState("saved");
+        setTimeout(() => setSaveState("idle"), 2000);
+      } else {
+        setSaveState("error");
+        setTimeout(() => setSaveState("idle"), 3000);
+      }
+    } catch {
+      setSaveState("error");
+      setTimeout(() => setSaveState("idle"), 3000);
+    }
+  }, [project, selectedFile]);
 
   const filename = selectedFile ? selectedFile.split("/").pop() : undefined;
 
@@ -716,15 +758,25 @@ export default function AppShell() {
               <p className="editor-empty-label">Loading file</p>
             </div>
           ) : selectedFile ? (
-            <Editor
-              key={selectedFile}
-              content={fileContent}
-              onSave={handleSaveFile}
-              onContentChange={handleContentChange}
-              filename={filename}
-              project={project ?? undefined}
-              filePath={selectedFile ?? undefined}
-            />
+            <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+              <Editor
+                key={`${selectedFile}-${editorRestoreKey}`}
+                content={fileContent}
+                onSave={handleSaveFile}
+                onContentChange={handleContentChange}
+                filename={filename}
+                project={project ?? undefined}
+                filePath={selectedFile ?? undefined}
+              />
+              {showHistory && selectedFile && project && (
+                <VersionHistory
+                  project={project}
+                  filePath={selectedFile}
+                  onRestore={handleRestore}
+                  onClose={() => setShowHistory(false)}
+                />
+              )}
+            </div>
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>
               <span className="serif editor-empty-glyph" style={{ fontSize: "0.9375rem", color: "var(--rule-emphasis)", fontStyle: "italic" }}>
@@ -759,6 +811,21 @@ export default function AppShell() {
               )}
             </div>
             <div className="status-right">
+              {selectedFile && (
+                <button
+                  title="View version history"
+                  onClick={() => setShowHistory(h => !h)}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer", padding: "0 4px",
+                    color: showHistory ? "var(--lamp)" : "var(--quill-muted)",
+                    fontSize: "0.6875rem", fontFamily: "var(--font-ui)",
+                    display: "flex", alignItems: "center", gap: 3,
+                    transition: "color 0.15s",
+                  }}
+                >
+                  ◷ History
+                </button>
+              )}
               <span className="status-item" style={{
                 color: saveState === "saved" ? "var(--ink-success)"
                   : saveState === "saving"   ? "var(--lamp)"
@@ -772,6 +839,7 @@ export default function AppShell() {
               </span>
             </div>
           </div>
+
         </main>
 
         {/* ── Drag: editor ↔ preview ── */}
