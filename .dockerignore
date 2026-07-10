@@ -1,0 +1,32 @@
+node_modules
+npm-debug.log
+.next
+.git
+
+# Docs and markdown
+README.md
+README_AUTH.md
+docs/
+
+# TypeScript build artifacts
+tsconfig.tsbuildinfo
+
+# Environment files
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE and Editor files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.DS_Store
+
+# Temporary compile workspaces
+/tmp/oo-compile
+/tmp/oo-workspace
