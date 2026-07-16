@@ -53,6 +53,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-noto \
     fonts-open-sans \
     fonts-urw-base35 \
+    fonts-carlito \
     # Font subsystem
     fontconfig \
     libfontconfig1 \
