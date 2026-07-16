@@ -24,6 +24,9 @@ jobs:
             git fetch --all
             git reset --hard origin/main
             
+            # Remove any conflicting container and shut down existing compose environment
+            docker rm -f open-overleaf || true
+            docker compose down --remove-orphans
+            
             # Restart and rebuild the docker containers
-            docker compose down
             docker compose up -d --build
