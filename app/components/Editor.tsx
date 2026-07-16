@@ -353,7 +353,18 @@ class LspClient {
 
   connect(project: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      try { this.ws = new WebSocket("ws://localhost:3100"); } catch (e) { return reject(e); }
+      try {
+        let wsUrl = "ws://localhost:3100";
+        if (typeof window !== "undefined") {
+          if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            wsUrl = `${protocol}//${window.location.host}/lsp`;
+          }
+        }
+        this.ws = new WebSocket(wsUrl);
+      } catch (e) {
+        return reject(e);
+      }
 
       this.ws.onopen = async () => {
         try {

@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  open-overleaf:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: open-overleaf
+    ports:
+      - "3201:8080"  # Map Next.js application to host port 3201
+      - "3100:3100"  # Map TexLab LSP WebSocket bridge to host port 3100
+    env_file:
+      - .env.local   # Load environment variables from your local environment file
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G  # LaTeX compilation (like xelatex) can be memory intensive
