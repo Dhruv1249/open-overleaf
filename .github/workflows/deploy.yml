@@ -1,0 +1,29 @@
+name: Deploy to VM
+
+on:
+  push:
+    branches:
+      - main  # Adjust this if your default branch is different (e.g., master)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy application via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            # Navigate to the project directory
+            cd ~/open-overleaf || cd /home/opc/open-overleaf || exit 1
+            
+            # Fetch latest changes and reset to origin/main to prevent conflicts
+            git fetch --all
+            git reset --hard origin/main
+            
+            # Restart and rebuild the docker containers
+            docker compose down
+            docker compose up -d --build

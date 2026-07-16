@@ -25,7 +25,7 @@ async function fetchGitHubUser(token: string) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
-  const origin = url.origin;
+  const origin = process.env.APP_URL || url.origin;
   if (!code) return NextResponse.redirect(new URL("/login", origin));
 
   const tokenResp = await exchangeCode(code, `${origin}/api/auth/github/callback`);

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const origin = url.origin;
+  const origin = process.env.APP_URL || url.origin;
   const state = Math.random().toString(36).slice(2);
   const params = new URLSearchParams({
     client_id: process.env.GITHUB_CLIENT_ID || "",

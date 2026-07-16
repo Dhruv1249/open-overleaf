@@ -4,7 +4,7 @@ import { writeTokens } from "@/lib/google-drive";
 // GET /api/auth/google/callback  ← Google redirects here with ?code=...
 export async function GET(req: NextRequest) {
   const url    = new URL(req.url);
-  const origin = url.origin;
+  const origin = process.env.APP_URL || url.origin;
   const code   = url.searchParams.get("code");
   const error  = url.searchParams.get("error");
 
