@@ -104,10 +104,6 @@ export default function ProjectsList({ onSelect }: { onSelect: (name: string) =>
   useEffect(() => { loadData(); }, [loadData]);
 
   const handleConnect = () => { window.location.href = "/api/auth/github/login"; };
-  const handleLogout  = async () => {
-    await fetch("/api/auth/logout", { method: "POST" });
-    window.location.reload();
-  };
 
   // ── Create ─────────────────────────────────────────────────────────────────
   const openCreate = () => {

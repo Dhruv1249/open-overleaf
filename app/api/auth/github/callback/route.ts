@@ -25,18 +25,17 @@ async function fetchGitHubUser(token: string) {
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
   const origin = url.origin;
-  if (!code) return NextResponse.redirect(new URL("/", origin));
+  if (!code) return NextResponse.redirect(new URL("/login", origin));
 
   const tokenResp = await exchangeCode(code, `${origin}/api/auth/github/callback`);
   const accessToken = tokenResp.access_token;
-  if (!accessToken) return NextResponse.redirect(new URL("/?error=oauth", origin));
+  if (!accessToken) return NextResponse.redirect(new URL("/login?error=oauth", origin));
 
   const user = await fetchGitHubUser(accessToken);
   const allowed = process.env.ALLOW_GITHUB_USERNAME;
   if (!user || !user.login || (allowed && user.login !== allowed)) {
-    return NextResponse.redirect(new URL("/?error=forbidden", origin));
+    return NextResponse.redirect(new URL("/login?error=forbidden", origin));
   }
 
   const payload = { id: user.id, login: user.login, name: user.name, access_token: accessToken };

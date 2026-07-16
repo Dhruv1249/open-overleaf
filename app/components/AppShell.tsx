@@ -636,7 +636,7 @@ export default function AppShell() {
       .catch(() => {/* network error — use cached */});
 
     settingsProjectRef.current = project;
-  }, [project]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [project]);  
 
   // ── Debounced save of settings to GitHub on change ────────────────────────
   // We only save after the user is settled (1.5 s), and only when a project is open.
@@ -658,7 +658,7 @@ export default function AppShell() {
         body: JSON.stringify({ settings: toSave }),
       }).catch(() => {/* best-effort */});
     }, 1500);
-  }, [compilerSettings]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [compilerSettings]);  
 
   const dragRail    = useCallback((dx: number) => setRailWidth(w    => clamp(w + dx,  80, 900)),  []);
   const dragPreview = useCallback((dx: number) => setPreviewWidth(w => clamp(w - dx, 150, 1100)), []);
@@ -692,7 +692,7 @@ export default function AppShell() {
         body: JSON.stringify({ settings: toSave }),
       }).catch(() => {});
     }, 1500);
-  }, [mainFile]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [mainFile]);  
 
   // Reset compile state when project changes
   useEffect(() => {

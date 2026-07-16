@@ -1,7 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import {
   getFileMeta,
-  putFileAtPath,
   putBinaryAtPath,
   deleteFileAtPath,
   listAllFilesInDir,

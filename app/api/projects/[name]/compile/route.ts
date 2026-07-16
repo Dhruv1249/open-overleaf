@@ -5,18 +5,6 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 
-// ── Binary file extensions that need raw buffer treatment ─────────────────────
-const BINARY_EXTS = new Set([
-  ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp",
-  ".pdf", ".eps", ".ps",
-  ".ttf", ".otf", ".woff", ".woff2",
-  ".zip", ".tar", ".gz",
-]);
-
-function isBinary(filename: string): boolean {
-  return BINARY_EXTS.has(path.extname(filename).toLowerCase());
-}
-
 // ── GitHub file fetch (returns raw Buffer — handles both text and binary) ─────
 async function fetchGitHubFileBuffer(
   repoPath: string,

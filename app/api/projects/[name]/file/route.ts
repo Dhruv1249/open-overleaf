@@ -5,7 +5,6 @@ import {
   putFileAtPath,
   deleteFileAtPath,
   deleteDirectoryAtPath,
-  listDirectory,
 } from "@/lib/github";
 import { verifySessionFromRequest } from "@/lib/session";
 

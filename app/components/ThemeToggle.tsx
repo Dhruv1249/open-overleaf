@@ -8,7 +8,7 @@ export default function ThemeToggle() {
   useEffect(() => {
     try {
       const saved = localStorage.getItem("oo:theme");
-      let t: "light" | "dark" =
+      const t: "light" | "dark" =
         saved === "light" || saved === "dark"
           ? saved
           : window.matchMedia?.("(prefers-color-scheme: light)").matches

@@ -119,7 +119,7 @@ function preprocessClientMsg(msg) {
 function postprocessServerMsg(msg) {
   try {
     return translateUris(msg, serverUriToClient);
-  } catch (e) {
+  } catch {
     return msg;
   }
 }

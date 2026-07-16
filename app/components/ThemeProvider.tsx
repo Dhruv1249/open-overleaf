@@ -13,7 +13,7 @@ export default function ThemeProvider() {
       }
       document.documentElement.classList.remove("theme-light", "theme-dark");
       document.documentElement.classList.add(`theme-${theme}`);
-    } catch (e) {
+    } catch {
       // ignore
     }
   }, []);

@@ -8,7 +8,7 @@ export function verifySessionFromRequest(req: Request) {
   try {
     const payload = jwt.verify(token, process.env.SESSION_SECRET || "dev-secret");
     return payload as any;
-  } catch (e) {
+  } catch {
     return null;
   }
 }

@@ -570,7 +570,7 @@ export default function Editor({ content: initial, onSave, onContentChange, file
         lspRef.current.sendNotification("textDocument/didClose", { textDocument: { uri } });
       }
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+   
   }, [language, filePath, project, initial]);
 
   // ── Change & save ─────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 import { writeTokens } from "@/lib/google-drive";
 
 // GET /api/auth/google/callback  ← Google redirects here with ?code=...

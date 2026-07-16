@@ -3,7 +3,6 @@ import {
   listTopLevelDirectories,
   readFileAtPath,
   putFileAtPath,
-  getFileMeta,
   deleteDirectoryAtPath,
 } from "../../../lib/github";
 import { verifySessionFromRequest } from "../../../lib/session";
@@ -19,7 +18,7 @@ export async function GET(req: Request) {
       try {
         const content = await readFileAtPath(manifestPath, req);
         if (content) manifest = JSON.parse(content);
-      } catch (e) {
+      } catch {
         // ignore — no manifest is fine
       }
       projects.push({ name: d.name, manifest });
