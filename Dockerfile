@@ -64,7 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-crosextra-carlito \
     fonts-crosextra-caladea \
     fonts-roboto \
-    fonts-firasans \
+    fonts-firacode \
     fonts-ebgaramond \
     fonts-texgyre \
     ttf-mscorefonts-installer \
