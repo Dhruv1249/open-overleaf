@@ -129,6 +129,8 @@ function PdfPanel({
   const [drivePath,      setDrivePath]      = React.useState<string | null>(null);
   const [driveError,     setDriveError]     = React.useState<string | null>(null);
   const [lastSynced,     setLastSynced]     = React.useState<Date | null>(null);
+  const [copiedError,    setCopiedError]    = React.useState(false);
+  const [copiedWarning,  setCopiedWarning]  = React.useState(false);
 
   React.useEffect(() => {
     fetch("/api/auth/google/status")
@@ -417,14 +419,36 @@ function PdfPanel({
             flexShrink: 0,
             display: "flex",
             alignItems: "center",
+            justifyContent: "space-between",
             gap: 8,
           }}>
-            <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--ink-danger)" }}>
-              ✗ Compile errors
-            </span>
-            <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
-              scroll to see full log
-            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--ink-danger)" }}>
+                ✗ Compile errors
+              </span>
+              <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>
+                scroll to see full log
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(compileLog);
+                setCopiedError(true);
+                setTimeout(() => setCopiedError(false), 1500);
+              }}
+              className="btn-sm"
+              style={{
+                fontSize: "0.65rem",
+                padding: "2px 8px",
+                background: "rgba(180,40,40,0.15)",
+                color: "#f87171",
+                border: "1px solid rgba(180,40,40,0.3)",
+                borderRadius: "var(--r-xs)",
+                cursor: "pointer",
+              }}
+            >
+              {copiedError ? "Copied!" : "Copy Log"}
+            </button>
           </div>
           <pre style={{
             flex: 1, overflow: "auto", margin: 0, padding: "8px 10px",
@@ -440,8 +464,38 @@ function PdfPanel({
       {/* Warning log — collapsed, shown on success if warnings > 0 */}
       {compileState === "success" && warningCount > 0 && (
         <details style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, background: "var(--ink-raised)" }}>
-          <summary style={{ padding: "4px 10px", fontSize: "0.6875rem", cursor: "pointer", color: "var(--lamp)" }}>
-            {warningCount} warning{warningCount !== 1 ? "s" : ""} — click to expand
+          <summary style={{
+            padding: "4px 10px",
+            fontSize: "0.6875rem",
+            cursor: "pointer",
+            color: "var(--lamp)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          }}>
+            <span>{warningCount} warning{warningCount !== 1 ? "s" : ""} — click to expand</span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation(); // Prevent toggling the details disclosure
+                const warningsText = compileLog.split("\n").filter((l: string) => l.toLowerCase().includes("warning")).join("\n");
+                navigator.clipboard.writeText(warningsText);
+                setCopiedWarning(true);
+                setTimeout(() => setCopiedWarning(false), 1500);
+              }}
+              className="btn-sm"
+              style={{
+                fontSize: "0.65rem",
+                padding: "2px 8px",
+                background: "var(--lamp-dim)",
+                color: "var(--lamp)",
+                border: "1px solid var(--rule-soft)",
+                borderRadius: "var(--r-xs)",
+                cursor: "pointer",
+                marginLeft: 10,
+              }}
+            >
+              {copiedWarning ? "Copied!" : "Copy Warnings"}
+            </button>
           </summary>
           <pre style={{
             margin: 0, padding: "6px 10px", maxHeight: 120, overflow: "auto",

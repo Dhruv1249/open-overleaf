@@ -18,6 +18,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 ENV HOME=/home/node
 
+# Enable contrib repository and pre-accept EULA for MS core fonts
+RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's/Components: main/Components: main contrib/g' /etc/apt/sources.list.d/debian.sources; \
+    else \
+        sed -i 's/main/main contrib/g' /etc/apt/sources.list; \
+    fi && \
+    echo "ttf-mscorefonts-installer msttcorefontdir/accepted-mscorefonts-eula select true" | debconf-set-selections
+
 # Install TeX Live (English-only) and required system dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     # Core utilities
@@ -54,6 +62,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-open-sans \
     fonts-urw-base35 \
     fonts-crosextra-carlito \
+    fonts-crosextra-caladea \
+    fonts-roboto \
+    fonts-firasans \
+    fonts-ebgaramond \
+    fonts-texgyre \
+    ttf-mscorefonts-installer \
     # Font subsystem
     fontconfig \
     libfontconfig1 \
