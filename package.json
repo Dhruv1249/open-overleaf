@@ -8,9 +8,11 @@
     "dev:lsp": "fuser -k 3100/tcp 2>/dev/null; sleep 0.3; node texlab-bridge.js",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "mcp": "ts-node mcp-server.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
     "@monaco-editor/react": "^4.4.6",
     "concurrently": "^10.0.3",
     "jsonwebtoken": "9.0.0",
