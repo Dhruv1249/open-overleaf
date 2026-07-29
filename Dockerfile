@@ -42,6 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-publishers \
     biber \
     latexmk \
+    git \
+    chktex \
     texlive-fonts-recommended \
     texlive-fonts-extra \
     fonts-liberation \
@@ -95,6 +97,7 @@ RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nnode --experimental-strip-types 
     && chown node:node start.sh
 
 ENV PORT=8080
+ENV HOSTNAME=0.0.0.0
 EXPOSE 8080
 EXPOSE 3100
 EXPOSE 3202
