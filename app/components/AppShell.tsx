@@ -642,7 +642,8 @@ export default function AppShell() {
   // Version history panel
   const [showHistory,       setShowHistory]       = useState(false);
   // Copilot drawer panel
-  const [showCopilot,       setShowCopilot]       = useState(false);
+  const [showCopilot,       setShowCopilot]       = useState(true);
+  const [copilotHeight,     setCopilotHeight]     = useState(300);
   // Bumped on version restore to force Editor remount with restored content
   const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
 
@@ -1066,7 +1067,7 @@ export default function AppShell() {
                   {project}
                 </span>
               </div>
-              <div className="panel-scroll" style={{ flex: 1 }}>
+              <div className="panel-scroll" style={{ flex: 1, minHeight: 120 }}>
                 <ProjectTree
                   project={project}
                   selectedFile={selectedFile}
@@ -1074,8 +1075,29 @@ export default function AppShell() {
                   rootFile={compilerSettings.rootFile}
                   onSetRootFile={(p) => setCompilerSettings(s => ({ ...s, rootFile: p }))}
                 />
-
               </div>
+
+              {/* ── Collapsible & Resizable Copilot Chatbot Pane in Left Sidebar ── */}
+              {showCopilot && (
+                <div style={{ height: copilotHeight, flexShrink: 0, borderTop: "1px solid var(--rule-soft)", display: "flex", flexDirection: "column" }}>
+                  <CopilotDrawer
+                    isOpen={showCopilot}
+                    onClose={() => setShowCopilot(false)}
+                    activeFilePath={selectedFile || "main.tex"}
+                    selectedText=""
+                    fullFileContent={fileContent}
+                    compileLog={compileLog}
+                    errorCount={errorCount}
+                    warningCount={warningCount}
+                    projectFiles={selectedFile ? [selectedFile] : ["main.tex"]}
+                    getFileContent={(fp) => fp === selectedFile ? fileContent : ""}
+                    onApplyCode={(codeSnippet) => {
+                      setFileContent(codeSnippet);
+                      handleSaveFile(codeSnippet);
+                    }}
+                  />
+                </div>
+              )}
             </div>
           ) : (
             <ProjectsList onSelect={handleSelectProject} />

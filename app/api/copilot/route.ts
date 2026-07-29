@@ -6,12 +6,18 @@ export interface CopilotRequestPayload {
   selectedText?: string;
   fullFileContent?: string;
   activeFilePath?: string;
+  compileLog?: string;
+  errorCount?: number;
+  warningCount?: number;
   apiKey?: string;
 }
 
 export interface CopilotResponsePayload {
   success: boolean;
   message: string;
+  actionType?: "modify_file" | "delete_file" | "none";
+  targetPath?: string;
+  actionDescription?: string;
   replacementCode?: string;
   error?: string;
 }
@@ -27,6 +33,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     const selectedTextSnippet = payload.selectedText || "";
     const fullFileContentString = payload.fullFileContent || "";
     const fileContextsMap = payload.fileContexts || {};
+    const compileLogString = payload.compileLog || "";
+    const errorCountNumber = payload.errorCount || 0;
+    const warningCountNumber = payload.warningCount || 0;
 
     const geminiApiKeyString = payload.apiKey || process.env.GEMINI_API_KEY || "";
     if (!geminiApiKeyString) {
@@ -61,17 +70,29 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
       }
     }
 
+    if (compileLogString || errorCountNumber > 0 || warningCountNumber > 0) {
+      compiledContextPrompt += `LaTeX Compilation Status & Diagnostics:\n`;
+      compiledContextPrompt += `Error Count: ${errorCountNumber}, Warning Count: ${warningCountNumber}\n`;
+      compiledContextPrompt += `Log Output:\n\`\`\`\n${compileLogString.slice(-1500)}\n\`\`\`\n\n`;
+    }
+
     if (selectedTextSnippet) {
       compiledContextPrompt += `User Highlighted Selection:\n\`\`\`latex\n${selectedTextSnippet}\n\`\`\`\n`;
       compiledContextPrompt += `TASK INSTRUCTION: The user has highlighted the section above. Modify or refine ONLY this highlighted text based on the request while preserving surrounding LaTeX compatibility.\n\n`;
     } else {
-      compiledContextPrompt += `TASK INSTRUCTION: Answer the user query and generate/refine LaTeX code for ${activeFilePath}.\n\n`;
+      compiledContextPrompt += `TASK INSTRUCTION: Answer the user query and generate/refine LaTeX code or propose file operations for ${activeFilePath}.\n\n`;
     }
 
     compiledContextPrompt += `User Request: ${userPromptText}\n\n`;
     compiledContextPrompt += `OUTPUT FORMAT INSTRUCTION:\n`;
     compiledContextPrompt += `Return a valid JSON object strictly adhering to this schema:\n`;
-    compiledContextPrompt += `{\n  "message": "Brief natural language explanation",\n  "replacementCode": "The refined or generated LaTeX code snippet"\n}\n`;
+    compiledContextPrompt += `{\n`;
+    compiledContextPrompt += `  "message": "Brief natural language explanation of your response or proposed fix",\n`;
+    compiledContextPrompt += `  "actionType": "modify_file" | "delete_file" | "none",\n`;
+    compiledContextPrompt += `  "targetPath": "${activeFilePath}",\n`;
+    compiledContextPrompt += `  "actionDescription": "Human readable description of proposed modification for user approval",\n`;
+    compiledContextPrompt += `  "replacementCode": "The refined or generated LaTeX code snippet to insert or replace"\n`;
+    compiledContextPrompt += `}\n`;
 
     const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash-lite:generateContent?key=${geminiApiKeyString}`;
 
@@ -120,16 +141,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
       const geminiResponseData = await geminiHttpResponse.json();
       const rawCandidateText = geminiResponseData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-      let parsedJsonResponse = { message: rawCandidateText, replacementCode: "" };
+      let parsedJsonResponse = {
+        message: rawCandidateText,
+        actionType: "none",
+        targetPath: activeFilePath,
+        actionDescription: "",
+        replacementCode: "",
+      };
+
       try {
         parsedJsonResponse = JSON.parse(rawCandidateText);
       } catch {
-        parsedJsonResponse = { message: "Generated update:", replacementCode: rawCandidateText };
+        parsedJsonResponse = {
+          message: "Generated update:",
+          actionType: "modify_file",
+          targetPath: activeFilePath,
+          actionDescription: "Apply AI code modification",
+          replacementCode: rawCandidateText,
+        };
       }
 
       return NextResponse.json({
         success: true,
         message: parsedJsonResponse.message || "Refined successfully",
+        actionType: (parsedJsonResponse.actionType as any) || (parsedJsonResponse.replacementCode ? "modify_file" : "none"),
+        targetPath: parsedJsonResponse.targetPath || activeFilePath,
+        actionDescription: parsedJsonResponse.actionDescription || "Apply proposed changes",
         replacementCode: parsedJsonResponse.replacementCode || "",
       });
     }

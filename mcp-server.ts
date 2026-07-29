@@ -131,6 +131,36 @@ async function executeMCPTool(name: string, toolArguments: Record<string, any>):
     return { projects: projectNamesList };
   }
 
+  if (name === "list_files") {
+    const projectName = String(toolArguments?.projectName);
+    const subDirectory = String(toolArguments?.subDir || "");
+    const targetFolder = resolveSafePath(projectName, subDirectory);
+
+    if (!fs.existsSync(targetFolder)) {
+      throw new Error(`Directory not found: ${subDirectory} in project ${projectName}`);
+    }
+
+    const fileEntries: Array<{ name: string; path: string; isDirectory: boolean; sizeBytes: number }> = [];
+
+    function scanFolder(currentPath: string, relativePrefix: string) {
+      const items = fs.readdirSync(currentPath, { withFileTypes: true });
+      for (const item of items) {
+        const itemRelativePath = path.join(relativePrefix, item.name);
+        const itemFullPath = path.join(currentPath, item.name);
+        if (item.isDirectory()) {
+          fileEntries.push({ name: item.name, path: itemRelativePath, isDirectory: true, sizeBytes: 0 });
+          scanFolder(itemFullPath, itemRelativePath);
+        } else {
+          const stats = fs.statSync(itemFullPath);
+          fileEntries.push({ name: item.name, path: itemRelativePath, isDirectory: false, sizeBytes: stats.size });
+        }
+      }
+    }
+
+    scanFolder(targetFolder, subDirectory);
+    return { files: fileEntries };
+  }
+
   if (name === "read_project_file") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
@@ -144,6 +174,34 @@ async function executeMCPTool(name: string, toolArguments: Record<string, any>):
     return { content: fileContentString };
   }
 
+  if (name === "read_file_lines") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const startLineNumber = parseInt(toolArguments?.startLine || "1", 10);
+    const endLineNumber = parseInt(toolArguments?.endLine || "100", 10);
+
+    const targetFullPath = resolveSafePath(projectName, filePath);
+    if (!fs.existsSync(targetFullPath)) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+
+    const fullContent = fs.readFileSync(targetFullPath, "utf-8");
+    const contentLines = fullContent.split("\n");
+
+    const slicedLines = contentLines.slice(
+      Math.max(0, startLineNumber - 1),
+      Math.min(contentLines.length, endLineNumber)
+    );
+
+    return {
+      filePath: filePath,
+      startLine: startLineNumber,
+      endLine: endLineNumber,
+      totalLines: contentLines.length,
+      linesContent: slicedLines.join("\n"),
+    };
+  }
+
   if (name === "write_project_file") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
@@ -154,6 +212,42 @@ async function executeMCPTool(name: string, toolArguments: Record<string, any>):
     fs.writeFileSync(targetFullPath, fileContentString, "utf-8");
 
     return { message: `Successfully wrote ${filePath} in project ${projectName}` };
+  }
+
+  if (name === "delete_file") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const targetFullPath = resolveSafePath(projectName, filePath);
+
+    if (!fs.existsSync(targetFullPath)) {
+      throw new Error(`File or directory not found for deletion: ${filePath}`);
+    }
+
+    const stats = fs.statSync(targetFullPath);
+    if (stats.isDirectory()) {
+      fs.rmSync(targetFullPath, { recursive: true, force: true });
+    } else {
+      fs.unlinkSync(targetFullPath);
+    }
+
+    return { message: `Successfully deleted ${filePath} in project ${projectName}` };
+  }
+
+  if (name === "sync_project") {
+    const projectName = String(toolArguments?.projectName);
+    const commitMessageText = String(toolArguments?.commitMessage || "Auto-commit via MCP AI Copilot");
+    const projectDirectoryPath = path.resolve(PROJECTS_DIR, projectName);
+
+    if (!fs.existsSync(projectDirectoryPath)) {
+      throw new Error(`Project directory not found: ${projectName}`);
+    }
+
+    try {
+      await execAsync(`git add . && git commit -m "${commitMessageText}"`, { cwd: projectDirectoryPath });
+      return { status: "synced", message: `Project ${projectName} committed successfully: ${commitMessageText}` };
+    } catch (gitError: any) {
+      return { status: "idle", message: gitError.message || "Git sync skipped or nothing to commit" };
+    }
   }
 
   if (name === "compile_project") {
@@ -285,6 +379,18 @@ function createMCPServer(): Server {
           inputSchema: { type: "object", properties: {} },
         },
         {
+          name: "list_files",
+          description: "Lists files and directories inside a target LaTeX project.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the LaTeX project" },
+              subDir: { type: "string", description: "Optional sub-directory path", default: "" },
+            },
+            required: ["projectName"],
+          },
+        },
+        {
           name: "read_project_file",
           description: "Reads a .tex or text file from an open-overleaf project.",
           inputSchema: {
@@ -292,6 +398,20 @@ function createMCPServer(): Server {
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
               filePath: { type: "string", description: "Relative file path inside project" },
+            },
+            required: ["projectName", "filePath"],
+          },
+        },
+        {
+          name: "read_file_lines",
+          description: "Reads specific line ranges [startLine, endLine] from a file.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the LaTeX project" },
+              filePath: { type: "string", description: "Relative file path inside project" },
+              startLine: { type: "integer", description: "1-indexed starting line", default: 1 },
+              endLine: { type: "integer", description: "1-indexed ending line", default: 100 },
             },
             required: ["projectName", "filePath"],
           },
@@ -307,6 +427,30 @@ function createMCPServer(): Server {
               content: { type: "string", description: "Updated file content" },
             },
             required: ["projectName", "filePath", "content"],
+          },
+        },
+        {
+          name: "delete_file",
+          description: "Deletes a specific file or folder inside a target project.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the LaTeX project" },
+              filePath: { type: "string", description: "Relative path to file/folder for deletion" },
+            },
+            required: ["projectName", "filePath"],
+          },
+        },
+        {
+          name: "sync_project",
+          description: "Triggers Git commit & synchronization for a project.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the LaTeX project" },
+              commitMessage: { type: "string", description: "Optional git commit message" },
+            },
+            required: ["projectName"],
           },
         },
         {
