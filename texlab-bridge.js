@@ -63,7 +63,7 @@ function writeToDisk(clientUri, content) {
   try {
     fs.mkdirSync(path.dirname(diskPath), { recursive: true });
     fs.writeFileSync(diskPath, content, "utf8");
-  } catch (error: any) {
+  } catch (error) {
     console.error("[texlab-bridge] write failed:", diskPath, error.message);
   }
 }
@@ -88,7 +88,7 @@ function preprocessClientMsg(messagePayload) {
     }
 
     return translateUris(messagePayload, clientUriToServer);
-  } catch (error: any) {
+  } catch (error) {
     console.error("[texlab-bridge] preprocess error:", error.message);
     return messagePayload;
   }
@@ -157,7 +157,7 @@ wss.on("connection", (ws) => {
         if (ws.readyState === ws.OPEN) {
           ws.send(JSON.stringify(translatedObject));
         }
-      } catch (parseError: any) {
+      } catch (parseError) {
         console.error("[texlab-bridge] JSON parse error:", parseError.message);
       }
     }
@@ -200,7 +200,7 @@ wss.on("connection", (ws) => {
   });
 });
 
-httpServer.on("error", (err: any) => {
+httpServer.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
     console.error(`[texlab-bridge] Port ${PORT} in use.`);
     process.exit(1);
