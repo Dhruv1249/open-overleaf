@@ -1,26 +1,15 @@
-/**
- * TexLab LSP WebSocket Bridge — port 3100
- *
- * Key responsibilities beyond basic stdio↔WebSocket bridging:
- * 1. Write files to disk (/tmp/oo-workspace/...) so TexLab sees real files
- * 2. Translate URIs: client uses file:///workspace/... ↔ TexLab uses file:///tmp/oo-workspace/...
- * 3. Parse LSP Content-Length framing correctly (case-insensitive)
- */
-
-const { WebSocketServer } = require("ws");
-const { spawn, execSync } = require("child_process");
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
+import { WebSocketServer } from "ws";
+import { spawn, execSync } from "child_process";
+import http from "http";
+import fs from "fs";
+import path from "path";
 
 const PORT = 3100;
 const WORKSPACE_BASE = "/tmp/oo-workspace";
 const CLIENT_BASE = "file:///workspace";
 
-// Ensure base workspace dir exists
 fs.mkdirSync(WORKSPACE_BASE, { recursive: true });
 
-// Resolve texlab binary
 let TEXLAB_PATH = "texlab";
 try {
   TEXLAB_PATH = execSync("which texlab 2>/dev/null || echo texlab").toString().trim();
@@ -28,11 +17,10 @@ try {
   TEXLAB_PATH = "texlab";
 }
 
-// ── URI translation ───────────────────────────────────────────────────────────
 function clientUriToDisk(uri) {
   if (uri && uri.startsWith(CLIENT_BASE + "/")) {
-    const relPath = uri.slice(CLIENT_BASE.length + 1); // remove "file:///workspace/"
-    return path.join(WORKSPACE_BASE, relPath);
+    const relativePath = uri.slice(CLIENT_BASE.length + 1);
+    return path.join(WORKSPACE_BASE, relativePath);
   }
   return null;
 }
@@ -53,78 +41,67 @@ function serverUriToClient(uri) {
   return uri;
 }
 
-// Keys in LSP messages that hold URIs and need translation
 const URI_KEYS = new Set(["uri", "rootUri", "targetUri", "originSelectionRange"]);
 
-// Recursively translate all URI strings in a JSON object
-function translateUris(obj, fn) {
-  if (!obj || typeof obj !== "object") return obj;
-  if (Array.isArray(obj)) return obj.map(item => translateUris(item, fn));
-  const result = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (URI_KEYS.has(k) && typeof v === "string") {
-      result[k] = fn(v);
+function translateUris(objectPayload, translationFunction) {
+  if (!objectPayload || typeof objectPayload !== "object") return objectPayload;
+  if (Array.isArray(objectPayload)) return objectPayload.map(item => translateUris(item, translationFunction));
+  const translatedResult = {};
+  for (const [key, value] of Object.entries(objectPayload)) {
+    if (URI_KEYS.has(key) && typeof value === "string") {
+      translatedResult[key] = translationFunction(value);
     } else {
-      result[k] = translateUris(v, fn);
+      translatedResult[key] = translateUris(value, translationFunction);
     }
   }
-  return result;
+  return translatedResult;
 }
 
-// ── Write file to disk for a given client URI + content ───────────────────────
 function writeToDisk(clientUri, content) {
   const diskPath = clientUriToDisk(clientUri);
   if (!diskPath) return;
   try {
     fs.mkdirSync(path.dirname(diskPath), { recursive: true });
     fs.writeFileSync(diskPath, content, "utf8");
-  } catch (e) {
-    console.error("[texlab-bridge] write failed:", diskPath, e.message);
+  } catch (error: any) {
+    console.error("[texlab-bridge] write failed:", diskPath, error.message);
   }
 }
 
-// ── Preprocess message going Client → TexLab ──────────────────────────────────
-function preprocessClientMsg(msg) {
+function preprocessClientMsg(messagePayload) {
   try {
-    if (!msg || typeof msg !== "object") return msg;
+    if (!messagePayload || typeof messagePayload !== "object") return messagePayload;
 
-    // Write content to disk so TexLab can read real files
-    if (msg.method === "textDocument/didOpen") {
-      const uri = msg.params?.textDocument?.uri;
-      const text = msg.params?.textDocument?.text;
+    if (messagePayload.method === "textDocument/didOpen") {
+      const uri = messagePayload.params?.textDocument?.uri;
+      const text = messagePayload.params?.textDocument?.text;
       if (uri && text !== undefined) writeToDisk(uri, text);
-    } else if (msg.method === "textDocument/didChange") {
-      const uri = msg.params?.textDocument?.uri;
-      const text = msg.params?.contentChanges?.[0]?.text;
+    } else if (messagePayload.method === "textDocument/didChange") {
+      const uri = messagePayload.params?.textDocument?.uri;
+      const text = messagePayload.params?.contentChanges?.[0]?.text;
       if (uri && text !== undefined) writeToDisk(uri, text);
-    } else if (msg.method === "textDocument/didSave") {
-      // nothing extra needed
-    } else if (msg.method === "initialize" && msg.params?.workspaceFolders) {
-      // Create workspace dirs
-      for (const wf of msg.params.workspaceFolders) {
-        const diskPath = clientUriToDisk(wf.uri);
+    } else if (messagePayload.method === "initialize" && messagePayload.params?.workspaceFolders) {
+      for (const workspaceFolder of messagePayload.params.workspaceFolders) {
+        const diskPath = clientUriToDisk(workspaceFolder.uri);
         if (diskPath) fs.mkdirSync(diskPath, { recursive: true });
       }
     }
 
-    // Translate all URIs from client scheme → server scheme
-    return translateUris(msg, clientUriToServer);
-  } catch (e) {
-    console.error("[texlab-bridge] preprocess error:", e.message);
-    return msg;
+    return translateUris(messagePayload, clientUriToServer);
+  } catch (error: any) {
+    console.error("[texlab-bridge] preprocess error:", error.message);
+    return messagePayload;
   }
 }
 
-// ── Postprocess message going TexLab → Client ─────────────────────────────────
-function postprocessServerMsg(msg) {
+function postprocessServerMsg(messagePayload) {
   try {
-    return translateUris(msg, serverUriToClient);
+    return translateUris(messagePayload, serverUriToClient);
   } catch {
-    return msg;
+    return messagePayload;
   }
 }
 
-// ── HTTP / WebSocket server ───────────────────────────────────────────────────
 const httpServer = http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ ok: true, service: "texlab-bridge", port: PORT }));
@@ -132,108 +109,100 @@ const httpServer = http.createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer });
 console.log(`[texlab-bridge] Starting on port ${PORT}`);
-console.log(`[texlab-bridge] texlab binary: ${TEXLAB_PATH}`);
-console.log(`[texlab-bridge] workspace: ${WORKSPACE_BASE}`);
 
 wss.on("connection", (ws) => {
   console.log("[texlab-bridge] Client connected");
 
-  const texlab = spawn(TEXLAB_PATH, [], {
+  const texlabProcess = spawn(TEXLAB_PATH, [], {
     env: { ...process.env },
     stdio: ["pipe", "pipe", "pipe"],
   });
 
-  texlab.on("error", (err) => {
+  texlabProcess.on("error", (err) => {
     console.error("[texlab-bridge] Failed to start texlab:", err.message);
     ws.close(1011, "texlab failed to start");
   });
 
-  texlab.on("exit", (code) => {
+  texlabProcess.on("exit", (code) => {
     console.log(`[texlab-bridge] texlab exited code=${code}`);
     try { if (ws.readyState === ws.OPEN) ws.close(1000, "texlab exited"); } catch {}
   });
 
-  texlab.stderr.on("data", (data) => {
-    // Log TexLab stderr so we can see initialization/parsing errors
+  texlabProcess.stderr.on("data", (data) => {
     process.stderr.write("[texlab] " + data);
   });
 
-  // ── TexLab stdout → WebSocket ─────────────────────────────────────────────
-  let buf = Buffer.alloc(0);
-  texlab.stdout.on("data", (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
-    while (buf.length > 0) {
-      const sep = buf.indexOf("\r\n\r\n");
-      if (sep === -1) break;
+  let bufferData = Buffer.alloc(0);
+  texlabProcess.stdout.on("data", (chunk) => {
+    bufferData = Buffer.concat([bufferData, chunk]);
+    while (bufferData.length > 0) {
+      const separatorIndex = bufferData.indexOf("\r\n\r\n");
+      if (separatorIndex === -1) break;
 
-      const headerStr = buf.slice(0, sep).toString("utf8");
-      // case-insensitive Content-Length parse (LSP spec allows any case)
-      const match = headerStr.match(/content-length:\s*(\d+)/i);
-      if (!match) { buf = buf.slice(1); continue; }
+      const headerString = bufferData.slice(0, separatorIndex).toString("utf8");
+      const matchLength = headerString.match(/content-length:\s*(\d+)/i);
+      if (!matchLength) { bufferData = bufferData.slice(1); continue; }
 
-      const contentLength = parseInt(match[1], 10);
-      const bodyStart = sep + 4;
-      const bodyEnd = bodyStart + contentLength;
-      if (buf.length < bodyEnd) break;
+      const contentLength = parseInt(matchLength[1], 10);
+      const bodyStartIndex = separatorIndex + 4;
+      const bodyEndIndex = bodyStartIndex + contentLength;
+      if (bufferData.length < bodyEndIndex) break;
 
-      const json = buf.slice(bodyStart, bodyEnd).toString("utf8");
-      buf = buf.slice(bodyEnd);
+      const jsonString = bufferData.slice(bodyStartIndex, bodyEndIndex).toString("utf8");
+      bufferData = bufferData.slice(bodyEndIndex);
 
       try {
-        const msg = JSON.parse(json);
-        const translated = postprocessServerMsg(msg);
+        const messageObject = JSON.parse(jsonString);
+        const translatedObject = postprocessServerMsg(messageObject);
         if (ws.readyState === ws.OPEN) {
-          ws.send(JSON.stringify(translated));
+          ws.send(JSON.stringify(translatedObject));
         }
-      } catch (e) {
-        console.error("[texlab-bridge] JSON parse error:", e.message);
+      } catch (parseError: any) {
+        console.error("[texlab-bridge] JSON parse error:", parseError.message);
       }
     }
   });
 
-  // ── WebSocket → TexLab stdin ──────────────────────────────────────────────
   ws.on("message", (data) => {
     try {
-      const json = typeof data === "string" ? data : data.toString();
-      const msg = JSON.parse(json);
-      const processed = preprocessClientMsg(msg);
-      const encoded = Buffer.from(JSON.stringify(processed), "utf8");
-      texlab.stdin.write(`Content-Length: ${encoded.length}\r\n\r\n`);
-      texlab.stdin.write(encoded);
-    } catch (e) {
-      console.error("[texlab-bridge] stdin write error:", e);
+      const jsonString = typeof data === "string" ? data : data.toString();
+      const messageObject = JSON.parse(jsonString);
+      const processedObject = preprocessClientMsg(messageObject);
+      const encodedBuffer = Buffer.from(JSON.stringify(processedObject), "utf8");
+      texlabProcess.stdin.write(`Content-Length: ${encodedBuffer.length}\r\n\r\n`);
+      texlabProcess.stdin.write(encodedBuffer);
+    } catch (writeError) {
+      console.error("[texlab-bridge] stdin write error:", writeError);
     }
   });
 
   ws.on("close", () => {
-    console.log("[texlab-bridge] Client disconnected — sending LSP shutdown");
     try {
-      // Proper LSP shutdown sequence
-      const shutdown = JSON.stringify({ jsonrpc: "2.0", id: 9999, method: "shutdown", params: null });
-      const enc = Buffer.from(shutdown, "utf8");
-      texlab.stdin.write(`Content-Length: ${enc.length}\r\n\r\n`);
-      texlab.stdin.write(enc);
+      const shutdownString = JSON.stringify({ jsonrpc: "2.0", id: 9999, method: "shutdown", params: null });
+      const encodedShutdown = Buffer.from(shutdownString, "utf8");
+      texlabProcess.stdin.write(`Content-Length: ${encodedShutdown.length}\r\n\r\n`);
+      texlabProcess.stdin.write(encodedShutdown);
       setTimeout(() => {
-        const exit = JSON.stringify({ jsonrpc: "2.0", method: "exit", params: null });
-        const e2 = Buffer.from(exit, "utf8");
-        texlab.stdin.write(`Content-Length: ${e2.length}\r\n\r\n`);
-        texlab.stdin.write(e2);
-        texlab.stdin.end();
+        const exitString = JSON.stringify({ jsonrpc: "2.0", method: "exit", params: null });
+        const encodedExit = Buffer.from(exitString, "utf8");
+        texlabProcess.stdin.write(`Content-Length: ${encodedExit.length}\r\n\r\n`);
+        texlabProcess.stdin.write(encodedExit);
+        texlabProcess.stdin.end();
       }, 300);
     } catch {
-      try { texlab.kill("SIGTERM"); } catch {}
+      try { texlabProcess.kill("SIGTERM"); } catch {}
     }
   });
 
   ws.on("error", (err) => {
     console.error("[texlab-bridge] ws error:", err.message);
-    try { texlab.kill("SIGTERM"); } catch {}
+    try { texlabProcess.kill("SIGTERM"); } catch {}
   });
 });
 
-httpServer.on("error", (err) => {
+httpServer.on("error", (err: any) => {
   if (err.code === "EADDRINUSE") {
-    console.error(`[texlab-bridge] Port ${PORT} in use. Run: fuser -k ${PORT}/tcp`);
+    console.error(`[texlab-bridge] Port ${PORT} in use.`);
     process.exit(1);
   }
   console.error("[texlab-bridge] Server error:", err);
