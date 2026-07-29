@@ -101,15 +101,15 @@ COPY --chown=node:node --from=builder /app/public ./public
 COPY --chown=node:node --from=builder /app/.next/standalone ./
 COPY --chown=node:node --from=builder /app/.next/static ./.next/static
 
-# Copy the TexLab bridge (with node ownership)
+# Copy the TexLab bridge and MCP server (with node ownership)
 COPY --chown=node:node texlab-bridge.js ./
+COPY --chown=node:node mcp-server.ts ./
 
-# texlab-bridge.js only requires 'ws' (plus Node built-ins).
-# Copy it directly from the builder — no network call needed at image build time.
-COPY --chown=node:node --from=builder /app/node_modules/ws ./node_modules/ws
+# Copy required node_modules for texlab bridge and MCP server
+COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 
-# Create startup script that runs the bridge and Next.js, and passes signals cleanly
-RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nexec node server.js\n' > start.sh \
+# Create startup script that runs the LSP bridge, MCP server, and Next.js cleanly
+RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nnode --experimental-strip-types mcp-server.ts &\nexec node server.js\n' > start.sh \
     && chmod +x start.sh \
     && chown node:node start.sh
 
@@ -117,6 +117,7 @@ RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nexec node server.js\n' > start.s
 ENV PORT=8080
 EXPOSE 8080
 EXPOSE 3100
+EXPOSE 3202
 
 # Run container as a secure, non-privileged user
 USER node

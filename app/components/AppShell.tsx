@@ -7,6 +7,7 @@ import ProjectsList from "./ProjectsList";
 import ProjectTree from "./ProjectTree";
 import Editor from "./Editor";
 import VersionHistory from "./VersionHistory";
+import CopilotDrawer from "./CopilotDrawer";
 
 // ── Google Drive icon (coloured SVG) ─────────────────────────────────────────────────────
 function DriveIcon({ color, size = 14 }: { color?: string; size?: number }) {
@@ -640,6 +641,8 @@ export default function AppShell() {
   const [mobileTab, setMobileTab] = useState<"files"|"editor"|"preview">("editor");
   // Version history panel
   const [showHistory,       setShowHistory]       = useState(false);
+  // Copilot drawer panel
+  const [showCopilot,       setShowCopilot]       = useState(false);
   // Bumped on version restore to force Editor remount with restored content
   const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
 
@@ -1148,6 +1151,21 @@ export default function AppShell() {
                   ◷ History
                 </button>
               )}
+              {selectedFile && (
+                <button
+                  title="Open AI Copilot"
+                  onClick={() => setShowCopilot(c => !c)}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer", padding: "0 4px",
+                    color: showCopilot ? "var(--lamp)" : "var(--quill-muted)",
+                    fontSize: "0.6875rem", fontFamily: "var(--font-ui)",
+                    display: "flex", alignItems: "center", gap: 3,
+                    transition: "color 0.15s",
+                  }}
+                >
+                  ✨ Copilot
+                </button>
+              )}
               <span className="status-item" style={{
                 color: saveState === "saved" ? "var(--ink-success)"
                   : saveState === "saving"   ? "var(--lamp)"
@@ -1198,6 +1216,25 @@ export default function AppShell() {
             engine={compilerSettings.engine}
             onRestore={handleRestore}
             onClose={() => setShowHistory(false)}
+          />
+        )}
+
+        {/* ── AI Copilot drawer overlay ── */}
+        {showCopilot && selectedFile && project && (
+          <CopilotDrawer
+            isOpen={showCopilot}
+            onClose={() => setShowCopilot(false)}
+            activeFilePath={selectedFile}
+            selectedText=""
+            fullFileContent={fileContent}
+            projectFiles={selectedFile ? [selectedFile] : ["main.tex"]}
+            getFileContent={(targetFilePath) =>
+              targetFilePath === selectedFile ? fileContent : ""
+            }
+            onApplyCode={(replacementCode) => {
+              setFileContent(replacementCode);
+              handleSaveFile(replacementCode);
+            }}
           />
         )}
       </div>

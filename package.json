@@ -2,6 +2,7 @@
   "name": "open-overleaf",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "concurrently --names \"next,lsp\" --prefix-colors \"cyan,yellow\" \"next dev\" \"npm run dev:lsp\"",
     "dev:next": "next dev",
@@ -9,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "mcp": "ts-node mcp-server.ts"
+    "mcp": "node --experimental-strip-types mcp-server.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

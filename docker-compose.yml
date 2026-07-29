@@ -9,6 +9,7 @@ services:
     ports:
       - "3201:8080"  # Map Next.js application to host port 3201
       - "3100:3100"  # Map TexLab LSP WebSocket bridge to host port 3100
+      - "3202:3202"  # Map Model Context Protocol (MCP) server port
     env_file:
       - .env.local   # Load environment variables from your local environment file
     restart: unless-stopped
