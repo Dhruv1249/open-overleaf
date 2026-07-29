@@ -1,4 +1,3 @@
-# ── STAGE 1: Build Next.js App ───────────────────────────────────────────────
 FROM node:24-alpine AS builder
 
 WORKDIR /app
@@ -8,17 +7,12 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-# ── STAGE 2: Production Environment ──────────────────────────────────────────
-# node:24-bookworm-slim ships Node.js 24 out of the box — no manual NodeSource
-# dance needed, saving ~50 MB and removing the external curl/GPG dependency.
 FROM node:24-bookworm-slim AS runner
 
-# Prevent interactive prompts during apt-get
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 ENV HOME=/home/node
 
-# Enable contrib repository and pre-accept EULA for MS core fonts
 RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
         sed -i 's/Components: main/Components: main contrib/g' /etc/apt/sources.list.d/debian.sources; \
     else \
@@ -26,9 +20,7 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     fi && \
     echo "ttf-mscorefonts-installer msttcorefontdir/accepted-mscorefonts-eula select true" | debconf-set-selections
 
-# Install TeX Live (English-only) and required system dependencies.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    # Core utilities
     curl \
     ca-certificates \
     perl \
@@ -37,7 +29,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     imagemagick \
     poppler-utils \
     tini \
-    # TeX Live — engines + collections
     texlive-latex-base \
     texlive-latex-recommended \
     texlive-latex-extra \
@@ -51,10 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     texlive-publishers \
     biber \
     latexmk \
-    # Fonts — TeX bundled (essential for academic papers)
     texlive-fonts-recommended \
     texlive-fonts-extra \
-    # Fonts — system (XeTeX/LuaTeX load these natively)
     fonts-liberation \
     fonts-liberation2 \
     fonts-lmodern \
@@ -68,21 +57,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     fonts-ebgaramond \
     fonts-texgyre \
     ttf-mscorefonts-installer \
-    # Font subsystem
     fontconfig \
     libfontconfig1 \
     libfreetype6 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Rebuild font caches — required for XeTeX/LuaTeX to find system fonts.
-# --update (without --force) only refreshes stale entries, much faster than
-# forcing a full re-download of the LuaTeX font database every build.
 RUN fc-cache -fv \
     && luaotfload-tool --update \
     && mktexlsr
 
-# Install TexLab LSP server (detecting system architecture for multi-arch / ARM support)
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "x86_64" ]; then \
         TEXLAB_ARCH="x86_64"; \
@@ -96,33 +80,27 @@ RUN ARCH=$(uname -m) && \
 
 WORKDIR /app
 
-# Copy Next.js standalone build and static files (with node ownership)
 COPY --chown=node:node --from=builder /app/public ./public
 COPY --chown=node:node --from=builder /app/.next/standalone ./
 COPY --chown=node:node --from=builder /app/.next/static ./.next/static
 
-# Copy the TexLab bridge and MCP server (with node ownership)
 COPY --chown=node:node texlab-bridge.js ./
 COPY --chown=node:node mcp-server.ts ./
-
-# Copy required node_modules for texlab bridge and MCP server
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 
-# Create startup script that runs the LSP bridge, MCP server, and Next.js cleanly
+RUN mkdir -p /app/projects && chown -R node:node /app/projects
+
 RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nnode --experimental-strip-types mcp-server.ts &\nexec node server.js\n' > start.sh \
     && chmod +x start.sh \
     && chown node:node start.sh
 
-# Cloud Run expects the app to listen on the port defined by $PORT (default 8080)
 ENV PORT=8080
 EXPOSE 8080
 EXPOSE 3100
 EXPOSE 3202
 
-# Run container as a secure, non-privileged user
 USER node
 
-# Health check to ensure the Next.js server is responding
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
   CMD curl -f http://localhost:8080/api/auth/session || exit 1
 
