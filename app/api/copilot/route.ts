@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { verifySessionFromRequest } from "@/lib/session";
+import crypto from "crypto";
 
 export interface CopilotRequestPayload {
   prompt: string;
@@ -10,6 +12,7 @@ export interface CopilotRequestPayload {
   errorCount?: number;
   warningCount?: number;
   apiKey?: string;
+  projectName?: string;
 }
 
 export interface CopilotResponsePayload {
@@ -22,11 +25,162 @@ export interface CopilotResponsePayload {
   error?: string;
 }
 
+const functionDeclarations = [
+  {
+    name: "list_projects",
+    description: "Lists all LaTeX projects stored in open-overleaf.",
+    parameters: {
+      type: "OBJECT",
+      properties: {}
+    }
+  },
+  {
+    name: "list_files",
+    description: "Lists files and directories inside a target LaTeX project.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        subDir: { type: "STRING", description: "Optional sub-directory path relative to project root" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "read_project_file",
+    description: "Reads a .tex or text file from an open-overleaf project in GitHub.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" }
+      },
+      required: ["projectName", "filePath"]
+    }
+  },
+  {
+    name: "write_project_file",
+    description: "Writes or updates a file in an open-overleaf project and commits it to GitHub.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" },
+        content: { type: "STRING", description: "Updated file content" }
+      },
+      required: ["projectName", "filePath", "content"]
+    }
+  },
+  {
+    name: "compile_project",
+    description: "Triggers LaTeX compilation for an open-overleaf project on the backend, fetching fresh files from GitHub.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        engine: { type: "STRING", description: "Compilation engine: xelatex, pdflatex, lualatex" },
+        entryFile: { type: "STRING", description: "Target tex file to compile" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "get_compilation_log",
+    description: "Reads the compilation log file (main.log) from local backend directory.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        logFile: { type: "STRING", description: "Name of log file, defaults to main.log" },
+        startLine: { type: "INTEGER", description: "1-indexed starting line to slice" },
+        endLine: { type: "INTEGER", description: "1-indexed ending line to slice" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "search_in_project",
+    description: "Performs full-text search across project files using a locally cached git clone.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        query: { type: "STRING", description: "String to search for" },
+        filePattern: { type: "STRING", description: "Glob pattern to filter files, e.g., *.tex" },
+        caseSensitive: { type: "BOOLEAN", description: "Whether grep should be case-sensitive" }
+      },
+      required: ["projectName", "query"]
+    }
+  },
+  {
+    name: "validate_tex",
+    description: "Runs chktex to lint a LaTeX file and retrieve syntax warning/error diagnostics.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" }
+      },
+      required: ["projectName", "filePath"]
+    }
+  }
+];
+
+/**
+ * Computes or retrieves the active MCP authentication token.
+ */
+function getEffectiveMCPToken(): string {
+  if (process.env.OVERLEAF_MCP_TOKEN) {
+    return process.env.OVERLEAF_MCP_TOKEN;
+  }
+  const secretString = process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET || "open_overleaf_mcp_secret";
+  let ghTokenHash = process.env.GITHUB_TOKEN_HASH || "";
+  if (!ghTokenHash) {
+    const rawSecret = process.env.GITHUB_CLIENT_SECRET || "default_gh_token";
+    ghTokenHash = crypto.createHash("sha256").update(rawSecret).digest("hex");
+  }
+  const repoName = process.env.GITHUB_SINGLE_REPO_NAME || "overleaf-projects";
+  const rawCombined = `${secretString}:${ghTokenHash}:${repoName}`;
+  return crypto.createHash("sha256").update(rawCombined).digest("hex");
+}
+
+/**
+ * Invokes a tool on the local MCP server running on HTTP port 3202.
+ */
+async function callLocalMCPTool(toolName: string, toolArguments: Record<string, any>): Promise<any> {
+  const mcpPort = parseInt(process.env.MCP_PORT || "3202", 10);
+  const token = getEffectiveMCPToken();
+  const url = `http://127.0.0.1:${mcpPort}/api/mcp/tool`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      tool: toolName,
+      arguments: toolArguments
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`MCP tool error ${response.status}: ${text}`);
+  }
+  const data = await response.json();
+  if (!data.success) {
+    throw new Error(data.error || "MCP tool execution failed");
+  }
+  return data.result;
+}
+
 /**
  * Handles AI Copilot code generation requests powered by gemini-3.6-flash-lite with 429 retry backoff.
  */
 export async function POST(request: NextRequest): Promise<NextResponse<CopilotResponsePayload>> {
   try {
+    const session = verifySessionFromRequest(request);
+    const userAccessToken = session?.access_token as string | undefined;
+
     const payload: CopilotRequestPayload = await request.json();
     const userPromptText = payload.prompt || "";
     const activeFilePath = payload.activeFilePath || "main.tex";
@@ -36,6 +190,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     const compileLogString = payload.compileLog || "";
     const errorCountNumber = payload.errorCount || 0;
     const warningCountNumber = payload.warningCount || 0;
+    const projectName = payload.projectName || "";
 
     const geminiApiKeyString = payload.apiKey || process.env.GEMINI_API_KEY || "";
     if (!geminiApiKeyString) {
@@ -57,6 +212,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     }
 
     let compiledContextPrompt = `You are an expert LaTeX Copilot AI Assistant inside Open-Overleaf.\n\n`;
+    if (projectName) {
+      compiledContextPrompt += `Current Project Name: ${projectName}\n`;
+    }
     compiledContextPrompt += `Active File: ${activeFilePath}\n`;
 
     if (fullFileContentString) {
@@ -96,85 +254,162 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
 
     const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash-lite:generateContent?key=${geminiApiKeyString}`;
 
-    const requestBodyPayload = {
-      contents: [
-        {
-          parts: [
-            {
-              text: compiledContextPrompt,
-            },
-          ],
-        },
-      ],
-      generationConfig: {
-        responseMimeType: "application/json",
+    const conversationHistory: any[] = [
+      {
+        role: "user",
+        parts: [
+          {
+            text: compiledContextPrompt,
+          },
+        ],
       },
-    };
+    ];
 
+    let finalResponseData: any = null;
     const maxRetryAttemptsLimit = 3;
-    for (let attemptIndex = 1; attemptIndex <= maxRetryAttemptsLimit; attemptIndex++) {
-      const geminiHttpResponse = await fetch(targetGeminiEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(requestBodyPayload),
-      });
+    let loopCounter = 0;
+    const maxLoopLimit = 8;
+    let isDone = false;
 
-      if (geminiHttpResponse.status === 429) {
-        if (attemptIndex < maxRetryAttemptsLimit) {
-          await new Promise((resolve) => setTimeout(resolve, 30000));
-          continue;
-        }
-        return NextResponse.json(
-          { success: false, message: "", error: "Rate limit exceeded (429). Please wait 30 seconds before retrying." },
-          { status: 429 }
-        );
-      }
+    while (!isDone && loopCounter < maxLoopLimit) {
+      loopCounter++;
 
-      if (!geminiHttpResponse.ok) {
-        const errorResponseBody = await geminiHttpResponse.text();
-        return NextResponse.json(
-          { success: false, message: "", error: `Gemini API Error (${geminiHttpResponse.status}): ${errorResponseBody}` },
-          { status: geminiHttpResponse.status }
-        );
-      }
-
-      const geminiResponseData = await geminiHttpResponse.json();
-      const rawCandidateText = geminiResponseData?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-      let parsedJsonResponse = {
-        message: rawCandidateText,
-        actionType: "none",
-        targetPath: activeFilePath,
-        actionDescription: "",
-        replacementCode: "",
+      const requestBodyPayload = {
+        contents: conversationHistory,
+        tools: [
+          {
+            functionDeclarations,
+          },
+        ],
+        generationConfig: {
+          responseMimeType: "application/json",
+        },
       };
 
-      try {
-        parsedJsonResponse = JSON.parse(rawCandidateText);
-      } catch {
-        parsedJsonResponse = {
-          message: "Generated update:",
-          actionType: "modify_file",
-          targetPath: activeFilePath,
-          actionDescription: "Apply AI code modification",
-          replacementCode: rawCandidateText,
-        };
+      let successAttempt = false;
+      let rawCandidateText = "";
+      let functionCallToExecute: any = null;
+
+      for (let attemptIndex = 1; attemptIndex <= maxRetryAttemptsLimit; attemptIndex++) {
+        const geminiHttpResponse = await fetch(targetGeminiEndpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBodyPayload),
+        });
+
+        if (geminiHttpResponse.status === 429) {
+          if (attemptIndex < maxRetryAttemptsLimit) {
+            await new Promise((resolve) => setTimeout(resolve, 30000));
+            continue;
+          }
+          return NextResponse.json(
+            { success: false, message: "", error: "Rate limit exceeded (429). Please wait 30 seconds before retrying." },
+            { status: 429 }
+          );
+        }
+
+        if (!geminiHttpResponse.ok) {
+          const errorResponseBody = await geminiHttpResponse.text();
+          return NextResponse.json(
+            { success: false, message: "", error: `Gemini API Error (${geminiHttpResponse.status}): ${errorResponseBody}` },
+            { status: geminiHttpResponse.status }
+          );
+        }
+
+        const geminiResponseData = await geminiHttpResponse.json();
+        const candidate = geminiResponseData?.candidates?.[0];
+        const contentPart = candidate?.content?.parts?.[0];
+
+        if (contentPart?.functionCall) {
+          functionCallToExecute = contentPart.functionCall;
+          conversationHistory.push({
+            role: "model",
+            parts: [contentPart],
+          });
+          successAttempt = true;
+          break;
+        } else {
+          rawCandidateText = contentPart?.text || "";
+          successAttempt = true;
+          break;
+        }
       }
 
-      return NextResponse.json({
-        success: true,
-        message: parsedJsonResponse.message || "Refined successfully",
-        actionType: (parsedJsonResponse.actionType as any) || (parsedJsonResponse.replacementCode ? "modify_file" : "none"),
-        targetPath: parsedJsonResponse.targetPath || activeFilePath,
-        actionDescription: parsedJsonResponse.actionDescription || "Apply proposed changes",
-        replacementCode: parsedJsonResponse.replacementCode || "",
-      });
+      if (!successAttempt) {
+        return NextResponse.json(
+          { success: false, message: "", error: "Failed to communicate with Gemini API" },
+          { status: 500 }
+        );
+      }
+
+      if (functionCallToExecute) {
+        const toolName = functionCallToExecute.name;
+        const toolArgs = functionCallToExecute.args || {};
+
+        let toolResult;
+        try {
+          const finalArgs = {
+            ...toolArgs,
+            githubToken: userAccessToken || toolArgs?.githubToken,
+          };
+          toolResult = await callLocalMCPTool(toolName, finalArgs);
+        } catch (err: any) {
+          toolResult = { error: err.message || "Failed to execute tool" };
+        }
+
+        conversationHistory.push({
+          role: "function",
+          parts: [
+            {
+              functionResponse: {
+                name: toolName,
+                response: { result: toolResult },
+              },
+            },
+          ],
+        });
+      } else {
+        isDone = true;
+
+        let parsedJsonResponse = {
+          message: rawCandidateText,
+          actionType: "none",
+          targetPath: activeFilePath,
+          actionDescription: "",
+          replacementCode: "",
+        };
+
+        try {
+          parsedJsonResponse = JSON.parse(rawCandidateText);
+        } catch {
+          parsedJsonResponse = {
+            message: "Generated update:",
+            actionType: "modify_file",
+            targetPath: activeFilePath,
+            actionDescription: "Apply AI code modification",
+            replacementCode: rawCandidateText,
+          };
+        }
+
+        finalResponseData = parsedJsonResponse;
+      }
     }
 
-    return NextResponse.json(
-      { success: false, message: "", error: "Failed to generate completion after maximum retries" },
-      { status: 500 }
-    );
+    if (!finalResponseData) {
+      return NextResponse.json(
+        { success: false, message: "", error: "Failed to generate completion after maximum turns" },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      success: true,
+      message: finalResponseData.message || "Refined successfully",
+      actionType: (finalResponseData.actionType as any) || (finalResponseData.replacementCode ? "modify_file" : "none"),
+      targetPath: finalResponseData.targetPath || activeFilePath,
+      actionDescription: finalResponseData.actionDescription || "Apply proposed changes",
+      replacementCode: finalResponseData.replacementCode || "",
+    });
   } catch (serverError: any) {
     return NextResponse.json(
       { success: false, message: "", error: serverError.message || "Internal Copilot Error" },

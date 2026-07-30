@@ -27,11 +27,9 @@ export interface CopilotDrawerProps {
   getFileContent: (filePath: string) => string;
   onApplyCode: (replacementCode: string, isSelection: boolean) => void;
   onDeleteFile?: (targetPath: string) => void;
+  projectName?: string;
 }
 
-/**
- * VS Code Copilot style AI assistant panel powering LaTeX file & selection refinement inside Open-Overleaf.
- */
 export default function CopilotDrawer({
   isOpen,
   onClose,
@@ -45,6 +43,7 @@ export default function CopilotDrawer({
   getFileContent,
   onApplyCode,
   onDeleteFile,
+  projectName,
 }: CopilotDrawerProps) {
   const [promptInputText, setPromptInputText] = useState("");
   const [messagesList, setMessagesList] = useState<ChatMessageItem[]>([
@@ -109,6 +108,7 @@ export default function CopilotDrawer({
           compileLog: compileLog,
           errorCount: errorCount,
           warningCount: warningCount,
+          projectName: projectName,
         }),
       });
 

@@ -65,6 +65,45 @@ function DragHandle({ onDrag }: { onDrag: (dx: number) => void }) {
   );
 }
 
+function DragHandleRow({ onDrag }: { onDrag: (dy: number) => void }) {
+  const [active, setActive] = useState(false);
+  const lastY = useRef(0);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    lastY.current = e.clientY;
+    setActive(true);
+
+    const overlay = document.createElement("div");
+    overlay.style.cssText =
+      "position:fixed;inset:0;z-index:99999;cursor:row-resize;background:transparent;";
+    document.body.appendChild(overlay);
+    document.body.style.userSelect = "none";
+
+    const onMove = (ev: MouseEvent) => {
+      const dy = ev.clientY - lastY.current;
+      lastY.current = ev.clientY;
+      onDrag(dy);
+    };
+    const onUp = () => {
+      setActive(false);
+      overlay.remove();
+      document.body.style.userSelect = "";
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [onDrag]);
+
+  return (
+    <div
+      className={`drag-handle-h${active ? " drag-active" : ""}`}
+      onMouseDown={onMouseDown}
+    />
+  );
+}
+
 function clamp(v: number, min: number, max: number) { return Math.max(min, Math.min(max, v)); }
 
 type SaveState    = "idle" | "saving" | "saved" | "error";
@@ -75,6 +114,7 @@ type Engine       = "auto" | "xelatex" | "pdflatex" | "lualatex" | "latexmk";
 const RAIL_KEY      = "oo-rail-width";
 const PREVIEW_KEY   = "oo-preview-width";
 const SETTINGS_KEY  = "oo-compiler-settings";
+const COPILOT_KEY   = "oo-copilot-height";
 
 const DEFAULT_SETTINGS = {
   engine:          "auto"       as Engine,
@@ -654,17 +694,18 @@ export default function AppShell() {
   // Track which project we last saved settings for (avoids stale saves on project switch)
   const settingsProjectRef = useRef<string | null>(null);
 
-  // Read panel widths from localStorage after hydration (SSR-safe)
   useEffect(() => {
     const r = Number(localStorage.getItem(RAIL_KEY));
     const p = Number(localStorage.getItem(PREVIEW_KEY));
+    const c = Number(localStorage.getItem(COPILOT_KEY));
     if (r > 0) setRailWidth(r);
     if (p > 0) setPreviewWidth(p);
+    if (c > 0) setCopilotHeight(c);
   }, []);
 
-  // Persist panel widths
   useEffect(() => { localStorage.setItem(RAIL_KEY,    String(railWidth));    }, [railWidth]);
   useEffect(() => { localStorage.setItem(PREVIEW_KEY, String(previewWidth)); }, [previewWidth]);
+  useEffect(() => { localStorage.setItem(COPILOT_KEY, String(copilotHeight)); }, [copilotHeight]);
 
   // ── Load project settings from GitHub when project changes ────────────────
   useEffect(() => {
@@ -720,6 +761,7 @@ export default function AppShell() {
 
   const dragRail    = useCallback((dx: number) => setRailWidth(w    => clamp(w + dx,  80, 900)),  []);
   const dragPreview = useCallback((dx: number) => setPreviewWidth(w => clamp(w - dx, 150, 1100)), []);
+  const dragCopilot = useCallback((dy: number) => setCopilotHeight(h => clamp(h - dy, 100, 800)), []);
 
   // Refs that survive re-renders for use in callbacks
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1077,9 +1119,9 @@ export default function AppShell() {
                 />
               </div>
 
-              {/* ── Collapsible & Resizable Copilot Chatbot Pane in Left Sidebar ── */}
               {showCopilot && (
                 <div style={{ height: copilotHeight, flexShrink: 0, borderTop: "1px solid var(--rule-soft)", display: "flex", flexDirection: "column" }}>
+                  <DragHandleRow onDrag={dragCopilot} />
                   <CopilotDrawer
                     isOpen={showCopilot}
                     onClose={() => setShowCopilot(false)}
@@ -1095,6 +1137,7 @@ export default function AppShell() {
                       setFileContent(codeSnippet);
                       handleSaveFile(codeSnippet);
                     }}
+                    projectName={project || undefined}
                   />
                 </div>
               )}
@@ -1257,6 +1300,7 @@ export default function AppShell() {
               setFileContent(replacementCode);
               handleSaveFile(replacementCode);
             }}
+            projectName={project || undefined}
           />
         )}
       </div>

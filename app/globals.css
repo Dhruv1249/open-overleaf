@@ -235,7 +235,6 @@ body {
 .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .drag-handle {
-  /* 8px grab zone with a 1px visible centre line */
   width: 8px;
   flex-shrink: 0;
   cursor: col-resize !important;
@@ -244,7 +243,6 @@ body {
   background: transparent;
   transition: background var(--t-micro) ease;
 }
-/* Thin amber line in the centre — shows the split without being noisy */
 .drag-handle::after {
   content: '';
   position: absolute;
@@ -258,6 +256,32 @@ body {
 .drag-handle.drag-active::after {
   background: var(--lamp);
   width: 2px;
+}
+
+.drag-handle-h {
+  height: 8px;
+  flex-shrink: 0;
+  cursor: row-resize !important;
+  position: relative;
+  z-index: 20;
+  background: transparent;
+  transition: background var(--t-micro) ease;
+}
+.drag-handle-h::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 1px;
+  background: var(--rule-standard);
+  transition: background var(--t-micro) ease, height var(--t-micro) ease;
+}
+.drag-handle-h:hover::after,
+.drag-handle-h.drag-active::after {
+  background: var(--lamp);
+  height: 2px;
 }
 
 /* ─── PANEL SECTION HEADERS ──────────────────────────────────────────────── */
