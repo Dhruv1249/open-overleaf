@@ -173,8 +173,58 @@ async function callLocalMCPTool(toolName: string, toolArguments: Record<string, 
   return data.result;
 }
 
+const modelsCascade = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite"
+];
+
 /**
- * Handles AI Copilot code generation requests powered by gemini-3.5-flash-lite with 429 retry backoff.
+ * Executes a call to the Gemini API with fallback cascading support on rate limits.
+ */
+async function fetchGeminiWithFallback(
+  payload: any,
+  apiKey: string
+): Promise<{ success: boolean; data?: any; error?: string; status?: number }> {
+  for (let modelIndex = 0; modelIndex < modelsCascade.length; modelIndex++) {
+    const modelName = modelsCascade[modelIndex];
+    const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+
+    console.log("Calling Gemini model:", modelName);
+
+    try {
+      const response = await fetch(targetGeminiEndpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.status === 429) {
+        console.warn(`Model ${modelName} returned 429. Trying next model...`);
+        continue;
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Model ${modelName} returned error ${response.status}: ${errorText}`);
+        return { success: false, error: `Gemini API Error (${response.status}): ${errorText}`, status: response.status };
+      }
+
+      const data = await response.json();
+      return { success: true, data };
+    } catch (err: any) {
+      console.error(`Fetch error calling ${modelName}:`, err.message);
+      if (modelIndex === modelsCascade.length - 1) {
+        return { success: false, error: err.message || "Failed to contact Gemini API", status: 500 };
+      }
+    }
+  }
+
+  return { success: false, error: "All models in cascade returned 429 (Rate Limit)", status: 429 };
+}
+
+/**
+ * Handles AI Copilot code generation requests powered by cascading Gemini models.
  */
 export async function POST(request: NextRequest): Promise<NextResponse<CopilotResponsePayload>> {
   try {
@@ -237,6 +287,10 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
       compiledContextPrompt += `Log Output:\n\`\`\`\n${compileLogString.slice(-1500)}\n\`\`\`\n\n`;
     }
 
+    compiledContextPrompt += `GUIDELINES:\n`;
+    compiledContextPrompt += `1. Respond directly without calling tools if the user is greeting you, saying hello, asking a general question, or the request does not require filesystem/compilation actions.\n`;
+    compiledContextPrompt += `2. Only call tools if they are strictly necessary to perform or answer the user request.\n\n`;
+
     if (selectedTextSnippet) {
       compiledContextPrompt += `User Highlighted Selection:\n\`\`\`latex\n${selectedTextSnippet}\n\`\`\`\n`;
       compiledContextPrompt += `TASK INSTRUCTION: The user has highlighted the section above. Modify or refine ONLY this highlighted text based on the request while preserving surrounding LaTeX compatibility.\n\n`;
@@ -255,8 +309,6 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     compiledContextPrompt += `  "replacementCode": "The refined or generated LaTeX code snippet to insert or replace"\n`;
     compiledContextPrompt += `}\n`;
 
-    const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKeyString}`;
-
     const conversationHistory: any[] = [
       {
         role: "user",
@@ -269,120 +321,83 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     ];
 
     let finalResponseData: any = null;
-    const maxRetryAttemptsLimit = 3;
     let loopCounter = 0;
-    const maxLoopLimit = 8;
+    const maxLoopLimit = 20;
     let isDone = false;
 
     while (!isDone && loopCounter < maxLoopLimit) {
       loopCounter++;
       console.log("Copilot loop turn:", loopCounter);
 
-      const requestBodyPayload = {
-        contents: conversationHistory,
-        tools: [
-          {
-            functionDeclarations,
+      const responseResult = await fetchGeminiWithFallback(
+        {
+          contents: conversationHistory,
+          tools: [
+            {
+              functionDeclarations,
+            },
+          ],
+          generationConfig: {
+            responseMimeType: "application/json",
           },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
         },
-      };
+        geminiApiKeyString
+      );
 
-      let successAttempt = false;
-      let rawCandidateText = "";
-      let functionCallToExecute: any = null;
-
-      for (let attemptIndex = 1; attemptIndex <= maxRetryAttemptsLimit; attemptIndex++) {
-        const geminiHttpResponse = await fetch(targetGeminiEndpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(requestBodyPayload),
-        });
-
-        if (geminiHttpResponse.status === 429) {
-          console.warn("Gemini API rate limited (429), retrying...");
-          if (attemptIndex < maxRetryAttemptsLimit) {
-            await new Promise((resolve) => setTimeout(resolve, 30000));
-            continue;
-          }
-          console.error("Gemini API rate limit exceeded permanently");
-          return NextResponse.json(
-            { success: false, message: "", error: "Rate limit exceeded (429). Please wait 30 seconds before retrying." },
-            { status: 429 }
-          );
-        }
-
-        if (!geminiHttpResponse.ok) {
-          const errorResponseBody = await geminiHttpResponse.text();
-          console.error("Gemini API error status:", geminiHttpResponse.status, "body:", errorResponseBody);
-          return NextResponse.json(
-            { success: false, message: "", error: `Gemini API Error (${geminiHttpResponse.status}): ${errorResponseBody}` },
-            { status: geminiHttpResponse.status }
-          );
-        }
-
-        const geminiResponseData = await geminiHttpResponse.json();
-        const candidate = geminiResponseData?.candidates?.[0];
-        const contentPart = candidate?.content?.parts?.[0];
-
-        if (contentPart?.functionCall) {
-          functionCallToExecute = contentPart.functionCall;
-          console.log("Gemini requested function call:", functionCallToExecute.name, "args:", JSON.stringify(functionCallToExecute.args));
-          conversationHistory.push({
-            role: "model",
-            parts: [contentPart],
-          });
-          successAttempt = true;
-          break;
-        } else {
-          rawCandidateText = contentPart?.text || "";
-          console.log("Gemini returned text response length:", rawCandidateText.length);
-          successAttempt = true;
-          break;
-        }
-      }
-
-      if (!successAttempt) {
-        console.error("Failed to fetch response from Gemini API inside loop");
+      if (!responseResult.success) {
         return NextResponse.json(
-          { success: false, message: "", error: "Failed to communicate with Gemini API" },
-          { status: 500 }
+          { success: false, message: "", error: responseResult.error },
+          { status: responseResult.status || 500 }
         );
       }
 
-      if (functionCallToExecute) {
-        const toolName = functionCallToExecute.name;
-        const toolArgs = functionCallToExecute.args || {};
+      const geminiResponseData = responseResult.data;
+      const candidate = geminiResponseData?.candidates?.[0];
+      const content = candidate?.content;
+      const parts = content?.parts || [];
 
-        let toolResult;
-        try {
-          const finalArgs = {
-            ...toolArgs,
-            githubToken: userAccessToken || toolArgs?.githubToken,
-          };
-          console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
-          toolResult = await callLocalMCPTool(toolName, finalArgs);
-          console.log("Tool execution succeeded");
-        } catch (err: any) {
-          console.error("Tool execution failed:", err.message);
-          toolResult = { error: err.message || "Failed to execute tool" };
-        }
+      const functionCalls = parts
+        .filter((p: any) => p.functionCall)
+        .map((p: any) => p.functionCall);
 
-        conversationHistory.push({
-          role: "user",
-          parts: [
-            {
+      if (functionCalls.length > 0) {
+        conversationHistory.push(content);
+        console.log("Gemini requested batched function calls:", functionCalls.map((fc: any) => fc.name).join(", "));
+
+        const responseParts = await Promise.all(
+          functionCalls.map(async (fc: any) => {
+            const toolName = fc.name;
+            const toolArgs = fc.args || {};
+            let toolResult;
+            try {
+              const finalArgs = {
+                ...toolArgs,
+                githubToken: userAccessToken || toolArgs?.githubToken,
+              };
+              console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
+              toolResult = await callLocalMCPTool(toolName, finalArgs);
+              console.log("Tool execution succeeded:", toolName);
+            } catch (err: any) {
+              console.error("Tool execution failed:", toolName, err.message);
+              toolResult = { error: err.message || "Failed to execute tool" };
+            }
+            return {
               functionResponse: {
                 name: toolName,
                 response: { result: toolResult },
               },
-            },
-          ],
+            };
+          })
+        );
+
+        conversationHistory.push({
+          role: "user",
+          parts: responseParts,
         });
       } else {
         isDone = true;
+        const rawCandidateText = parts[0]?.text || "";
+        console.log("Gemini returned text response length:", rawCandidateText.length);
 
         let parsedJsonResponse = {
           message: rawCandidateText,
