@@ -173,6 +173,17 @@ async function callLocalMCPTool(toolName: string, toolArguments: Record<string, 
   return data.result;
 }
 
+function sortObjectKeys(obj: any): any {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(sortObjectKeys);
+  return Object.keys(obj)
+    .sort()
+    .reduce((res: any, key: string) => {
+      res[key] = sortObjectKeys(obj[key]);
+      return res;
+    }, {});
+}
+
 const modelsCascade = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -320,7 +331,10 @@ CRITICAL GUIDELINES:
 2. ONLY call tools if they are strictly necessary to perform the filesystem or compilation actions requested by the user.
 3. If the user greets you or says hello, DO NOT list files, read files, or compile the project. Just reply with a helpful greeting text directly.
 4. When you have finished executing tools and have the necessary information to reply, stop calling tools and immediately return the final JSON text response. Do not perform unnecessary or redundant operations.
-5. NEVER write your own response JSON or assistant messages into files like '.overleaf.json' or '.tex' unless specifically instructed by the user to write that content.`
+5. NEVER write your own response JSON or assistant messages into files like '.overleaf.json' or '.tex' unless specifically instructed by the user to write that content.
+6. To inspect the contents, read the text, or see code inside any file (like a .tex, .json, or .bib file), you MUST call the 'read_project_file' tool. Do NOT use 'compile_project' or other tools to read/inspect files.
+7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
+8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.`
         }
       ]
     };
@@ -342,7 +356,7 @@ CRITICAL GUIDELINES:
           controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + "\n"));
         };
 
-    try {
+        try {
           let finalResponseData: any = null;
           let loopCounter = 0;
           const maxLoopLimit = 20;
@@ -388,12 +402,15 @@ CRITICAL GUIDELINES:
               conversationHistory.push(content);
               console.log("Gemini requested batched function calls:", functionCalls.map((fc: any) => fc.name).join(", "));
 
-              for (const fc of functionCalls) {
-                sendChunk({ type: "tool_start", name: fc.name, arguments: fc.args });
+              for (let i = 0; i < functionCalls.length; i++) {
+                const fc = functionCalls[i];
+                const callId = `call-${loopCounter}-${i}`;
+                sendChunk({ type: "tool_start", id: callId, name: fc.name, arguments: fc.args });
               }
 
               const responseParts = await Promise.all(
-                functionCalls.map(async (fc: any) => {
+                functionCalls.map(async (fc: any, i: number) => {
+                  const callId = `call-${loopCounter}-${i}`;
                   const toolName = fc.name;
                   const toolArgs = fc.args || {};
                   const readOnlyTools = [
@@ -405,15 +422,14 @@ CRITICAL GUIDELINES:
                     "search_in_project",
                     "validate_tex"
                   ];
-                  const signature = `${toolName}:${JSON.stringify(fc.args)}`;
+                  const sortedArgs = sortObjectKeys(fc.args || {});
+                  const signature = `${toolName}:${JSON.stringify(sortedArgs)}`;
                   let toolResult;
 
                   if (readOnlyTools.includes(toolName) && executedToolSignatures.has(signature)) {
                     console.warn("Blocked duplicate read-only tool call:", signature);
-                    toolResult = {
-                      error: `Duplicate call to read-only tool ${toolName} with arguments ${JSON.stringify(fc.args)} blocked. Do not call the same read-only tool again; return your final response.`
-                    };
-                    sendChunk({ type: "tool_result", name: toolName, success: false, error: "Duplicate call blocked" });
+                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: "Infinite loop protection blocked duplicate tool call" });
+                    throw new Error(`Infinite loop detected: duplicate call to read-only tool '${toolName}' with arguments ${JSON.stringify(fc.args)} was blocked.`);
                   } else {
                     executedToolSignatures.add(signature);
                     try {
@@ -424,10 +440,10 @@ CRITICAL GUIDELINES:
                       console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
                       toolResult = await callLocalMCPTool(toolName, finalArgs);
                       console.log("Tool execution succeeded:", toolName);
-                      sendChunk({ type: "tool_result", name: toolName, success: true, result: toolResult });
+                      sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult });
                     } catch (err: any) {
                       console.error("Tool execution failed:", toolName, err.message);
-                      sendChunk({ type: "tool_result", name: toolName, success: false, error: err.message });
+                      sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: err.message });
                       toolResult = { error: err.message || "Failed to execute tool" };
                     }
                   }
@@ -440,6 +456,7 @@ CRITICAL GUIDELINES:
                   };
                 })
               );
+
 
               conversationHistory.push({
                 role: "user",

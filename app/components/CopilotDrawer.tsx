@@ -12,6 +12,8 @@ export interface ChatMessageItem {
   replacementCode?: string;
   approvalStatus?: "pending" | "approved" | "rejected";
   isError?: boolean;
+  isToolCall?: boolean;
+  toolStatus?: "running" | "success" | "failed";
 }
 
 export interface CopilotDrawerProps {
@@ -143,8 +145,33 @@ export default function CopilotDrawer({
                 if (prev.includes(chunk.name)) return prev;
                 return [...prev, chunk.name];
               });
+              setMessagesList((prev) => [
+                ...prev,
+                {
+                  id: chunk.id,
+                  sender: "copilot",
+                  text: `🔧 Running ${chunk.name}${chunk.arguments ? `(${JSON.stringify(chunk.arguments)})` : ""}...`,
+                  isToolCall: true,
+                  toolStatus: "running",
+                },
+              ]);
             } else if (chunk.type === "tool_result") {
               setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
+              setMessagesList((prev) =>
+                prev.map((item) => {
+                  if (item.id === chunk.id) {
+                    return {
+                      ...item,
+                      text: chunk.success
+                        ? `✓ Completed ${chunk.name}`
+                        : `✕ Failed ${chunk.name}: ${chunk.error}`,
+                      toolStatus: chunk.success ? "success" : "failed",
+                      isError: !chunk.success,
+                    };
+                  }
+                  return item;
+                })
+              );
             } else if (chunk.type === "final") {
               finalData = chunk.response;
             } else if (chunk.type === "error") {
@@ -290,6 +317,12 @@ export default function CopilotDrawer({
               className={`max-w-[92%] p-2.5 rounded-lg ${
                 messageItem.sender === "user"
                   ? "bg-cyan-600 text-white rounded-br-none"
+                  : messageItem.isToolCall
+                  ? messageItem.toolStatus === "running"
+                    ? "bg-zinc-800/40 border border-zinc-700/30 text-zinc-400 rounded-bl-none italic"
+                    : messageItem.toolStatus === "success"
+                    ? "bg-zinc-800/70 border border-zinc-700/60 text-zinc-300 rounded-bl-none font-mono text-[10px]"
+                    : "bg-rose-950/40 border border-rose-800/40 text-rose-300 rounded-bl-none font-mono text-[10px]"
                   : messageItem.isError
                   ? "bg-rose-950 border border-rose-800 text-rose-200 rounded-bl-none"
                   : "bg-zinc-800 text-zinc-200 rounded-bl-none border border-zinc-700/50"
