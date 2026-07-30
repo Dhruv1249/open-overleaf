@@ -226,7 +226,7 @@ async function fetchGeminiWithFallback(
 /**
  * Handles AI Copilot code generation requests powered by cascading Gemini models.
  */
-export async function POST(request: NextRequest): Promise<NextResponse<CopilotResponsePayload>> {
+export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const session = verifySessionFromRequest(request);
     const userAccessToken = session?.access_token as string | undefined;
@@ -250,7 +250,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
       return NextResponse.json(
         { success: false, message: "", error: "GEMINI_API_KEY environment variable is missing on server" },
         { status: 400 }
-      );
+      ) as any;
     }
 
     const referencedFilesList: string[] = [];
@@ -309,6 +309,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     compiledContextPrompt += `  "replacementCode": "The refined or generated LaTeX code snippet to insert or replace"\n`;
     compiledContextPrompt += `}\n`;
 
+    const systemInstruction = {
+      parts: [
+        {
+          text: `You are an expert LaTeX Copilot AI Assistant inside Open-Overleaf.
+Your goal is to assist the user with editing and compiling LaTeX documents.
+
+CRITICAL GUIDELINES:
+1. Respond directly without calling any tools if the user is greeting you (e.g. "hello", "hi"), saying hello, asking a general question, or if the request does not require filesystem or compilation actions.
+2. ONLY call tools if they are strictly necessary to perform the filesystem or compilation actions requested by the user.
+3. If the user greets you or says hello, DO NOT list files, read files, or compile the project. Just reply with a helpful greeting text directly.
+4. When you have finished executing tools and have the necessary information to reply, stop calling tools and immediately return the final JSON text response. Do not perform unnecessary or redundant operations.
+5. NEVER write your own response JSON or assistant messages into files like '.overleaf.json' or '.tex' unless specifically instructed by the user to write that content.`
+        }
+      ]
+    };
+
     const conversationHistory: any[] = [
       {
         role: "user",
@@ -320,133 +336,152 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
       },
     ];
 
-    let finalResponseData: any = null;
-    let loopCounter = 0;
-    const maxLoopLimit = 20;
-    let isDone = false;
-
-    while (!isDone && loopCounter < maxLoopLimit) {
-      loopCounter++;
-      console.log("Copilot loop turn:", loopCounter);
-
-      const responseResult = await fetchGeminiWithFallback(
-        {
-          contents: conversationHistory,
-          tools: [
-            {
-              functionDeclarations,
-            },
-          ],
-          generationConfig: {
-            responseMimeType: "application/json",
-          },
-        },
-        geminiApiKeyString
-      );
-
-      if (!responseResult.success) {
-        return NextResponse.json(
-          { success: false, message: "", error: responseResult.error },
-          { status: responseResult.status || 500 }
-        );
-      }
-
-      const geminiResponseData = responseResult.data;
-      const candidate = geminiResponseData?.candidates?.[0];
-      const content = candidate?.content;
-      const parts = content?.parts || [];
-
-      const functionCalls = parts
-        .filter((p: any) => p.functionCall)
-        .map((p: any) => p.functionCall);
-
-      if (functionCalls.length > 0) {
-        conversationHistory.push(content);
-        console.log("Gemini requested batched function calls:", functionCalls.map((fc: any) => fc.name).join(", "));
-
-        const responseParts = await Promise.all(
-          functionCalls.map(async (fc: any) => {
-            const toolName = fc.name;
-            const toolArgs = fc.args || {};
-            let toolResult;
-            try {
-              const finalArgs = {
-                ...toolArgs,
-                githubToken: userAccessToken || toolArgs?.githubToken,
-              };
-              console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
-              toolResult = await callLocalMCPTool(toolName, finalArgs);
-              console.log("Tool execution succeeded:", toolName);
-            } catch (err: any) {
-              console.error("Tool execution failed:", toolName, err.message);
-              toolResult = { error: err.message || "Failed to execute tool" };
-            }
-            return {
-              functionResponse: {
-                name: toolName,
-                response: { result: toolResult },
-              },
-            };
-          })
-        );
-
-        conversationHistory.push({
-          role: "user",
-          parts: responseParts,
-        });
-      } else {
-        isDone = true;
-        const rawCandidateText = parts[0]?.text || "";
-        console.log("Gemini returned text response length:", rawCandidateText.length);
-
-        let parsedJsonResponse = {
-          message: rawCandidateText,
-          actionType: "none",
-          targetPath: activeFilePath,
-          actionDescription: "",
-          replacementCode: "",
+    const stream = new ReadableStream({
+      async start(controller) {
+        const sendChunk = (data: any) => {
+          controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + "\n"));
         };
 
         try {
-          parsedJsonResponse = JSON.parse(rawCandidateText);
-          console.log("Parsed JSON response successfully");
-        } catch {
-          console.warn("Failed to parse response as JSON, falling back to plaintext");
-          parsedJsonResponse = {
-            message: "Generated update:",
-            actionType: "modify_file",
-            targetPath: activeFilePath,
-            actionDescription: "Apply AI code modification",
-            replacementCode: rawCandidateText,
-          };
+          let finalResponseData: any = null;
+          let loopCounter = 0;
+          const maxLoopLimit = 20;
+          let isDone = false;
+
+          while (!isDone && loopCounter < maxLoopLimit) {
+            loopCounter++;
+            console.log("Copilot loop turn:", loopCounter);
+
+            const responseResult = await fetchGeminiWithFallback(
+              {
+                contents: conversationHistory,
+                tools: [
+                  {
+                    functionDeclarations,
+                  },
+                ],
+                systemInstruction,
+                generationConfig: {
+                  responseMimeType: "application/json",
+                },
+              },
+              geminiApiKeyString
+            );
+
+            if (!responseResult.success) {
+              sendChunk({ type: "error", error: responseResult.error });
+              controller.close();
+              return;
+            }
+
+            const geminiResponseData = responseResult.data;
+            const candidate = geminiResponseData?.candidates?.[0];
+            const content = candidate?.content;
+            const parts = content?.parts || [];
+
+            const functionCalls = parts
+              .filter((p: any) => p.functionCall)
+              .map((p: any) => p.functionCall);
+
+            if (functionCalls.length > 0) {
+              conversationHistory.push(content);
+              console.log("Gemini requested batched function calls:", functionCalls.map((fc: any) => fc.name).join(", "));
+
+              for (const fc of functionCalls) {
+                sendChunk({ type: "tool_start", name: fc.name, arguments: fc.args });
+              }
+
+              const responseParts = await Promise.all(
+                functionCalls.map(async (fc: any) => {
+                  const toolName = fc.name;
+                  const toolArgs = fc.args || {};
+                  let toolResult;
+                  try {
+                    const finalArgs = {
+                      ...toolArgs,
+                      githubToken: userAccessToken || toolArgs?.githubToken,
+                    };
+                    console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
+                    toolResult = await callLocalMCPTool(toolName, finalArgs);
+                    console.log("Tool execution succeeded:", toolName);
+                    sendChunk({ type: "tool_result", name: toolName, success: true, result: toolResult });
+                  } catch (err: any) {
+                    console.error("Tool execution failed:", toolName, err.message);
+                    sendChunk({ type: "tool_result", name: toolName, success: false, error: err.message });
+                    toolResult = { error: err.message || "Failed to execute tool" };
+                  }
+                  return {
+                    functionResponse: {
+                      name: toolName,
+                      response: { result: toolResult },
+                    },
+                  };
+                })
+              );
+
+              conversationHistory.push({
+                role: "user",
+                parts: responseParts,
+              });
+            } else {
+              isDone = true;
+              const rawCandidateText = parts[0]?.text || "";
+              console.log("Gemini returned text response length:", rawCandidateText.length);
+
+              let parsedJsonResponse = {
+                message: rawCandidateText,
+                actionType: "none",
+                targetPath: activeFilePath,
+                actionDescription: "",
+                replacementCode: "",
+              };
+
+              try {
+                parsedJsonResponse = JSON.parse(rawCandidateText);
+                console.log("Parsed JSON response successfully");
+              } catch {
+                console.warn("Failed to parse response as JSON, falling back to plaintext");
+                parsedJsonResponse = {
+                  message: "Generated update:",
+                  actionType: "modify_file",
+                  targetPath: activeFilePath,
+                  actionDescription: "Apply AI code modification",
+                  replacementCode: rawCandidateText,
+                };
+              }
+
+              finalResponseData = parsedJsonResponse;
+              sendChunk({ type: "final", response: parsedJsonResponse });
+            }
+          }
+
+          if (!finalResponseData) {
+            console.error("Exited loop because max turn limit was hit without final response");
+            sendChunk({ type: "error", error: "Failed to generate completion after maximum turns" });
+          } else {
+            console.log("Copilot request completed successfully");
+          }
+          controller.close();
+        } catch (streamError: any) {
+          console.error("Stream execution error:", streamError);
+          sendChunk({ type: "error", error: streamError.message || "Internal stream execution error" });
+          controller.close();
         }
-
-        finalResponseData = parsedJsonResponse;
       }
-    }
+    });
 
-    if (!finalResponseData) {
-      console.error("Exited loop because max turn limit was hit without final response");
-      return NextResponse.json(
-        { success: false, message: "", error: "Failed to generate completion after maximum turns" },
-        { status: 500 }
-      );
-    }
-
-    console.log("Copilot request completed successfully");
-    return NextResponse.json({
-      success: true,
-      message: finalResponseData.message || "Refined successfully",
-      actionType: (finalResponseData.actionType as any) || (finalResponseData.replacementCode ? "modify_file" : "none"),
-      targetPath: finalResponseData.targetPath || activeFilePath,
-      actionDescription: finalResponseData.actionDescription || "Apply proposed changes",
-      replacementCode: finalResponseData.replacementCode || "",
+    return new NextResponse(stream, {
+      headers: {
+        "Content-Type": "application/x-ndjson",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive"
+      }
     });
   } catch (serverError: any) {
     console.error("Server exception in Copilot route:", serverError);
     return NextResponse.json(
       { success: false, message: "", error: serverError.message || "Internal Copilot Error" },
       { status: 500 }
-    );
+    ) as any;
   }
 }

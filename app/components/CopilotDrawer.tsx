@@ -54,6 +54,7 @@ export default function CopilotDrawer({
     },
   ]);
   const [isLoadingState, setIsLoadingState] = useState(false);
+  const [activeTools, setActiveTools] = useState<string[]>([]);
   const [rateLimitCountdownNumber, setRateLimitCountdownNumber] = useState(0);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
@@ -112,47 +113,78 @@ export default function CopilotDrawer({
         }),
       });
 
-      if (response.status === 429) {
-        setRateLimitCountdownNumber(30);
+      if (!response.ok) {
+        throw new Error(`HTTP Error ${response.status}`);
       }
 
-      const responseData = await response.json();
-
-      if (!response.ok || !responseData.success) {
-        setMessagesList((previousList) => [
-          ...previousList,
-          {
-            id: `copilot-${Date.now()}`,
-            sender: "copilot",
-            text: responseData.error || "Copilot encountered an issue processing request.",
-            isError: true,
-          },
-        ]);
-        return;
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("Failed to initialize stream reader");
       }
 
-      const hasActionToApprove = responseData.actionType && responseData.actionType !== "none";
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalData: any = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const chunk = JSON.parse(line);
+            if (chunk.type === "tool_start") {
+              setActiveTools((prev) => {
+                if (prev.includes(chunk.name)) return prev;
+                return [...prev, chunk.name];
+              });
+            } else if (chunk.type === "tool_result") {
+              setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
+            } else if (chunk.type === "final") {
+              finalData = chunk.response;
+            } else if (chunk.type === "error") {
+              throw new Error(chunk.error);
+            }
+          } catch (e: any) {
+            console.error("Failed to parse chunk:", line, e);
+          }
+        }
+      }
+
+      setActiveTools([]);
+
+      if (!finalData) {
+        throw new Error("No final response received from AI assistant.");
+      }
+
+      const hasActionToApprove = finalData.actionType && finalData.actionType !== "none";
 
       setMessagesList((previousList) => [
         ...previousList,
         {
           id: `copilot-${Date.now()}`,
           sender: "copilot",
-          text: responseData.message || "Here is your proposed update:",
-          actionType: responseData.actionType,
-          targetPath: responseData.targetPath || activeFilePath,
-          actionDescription: responseData.actionDescription || "Apply proposed changes",
-          replacementCode: responseData.replacementCode,
+          text: finalData.message || "Here is your proposed update:",
+          actionType: finalData.actionType,
+          targetPath: finalData.targetPath || activeFilePath,
+          actionDescription: finalData.actionDescription || "Apply proposed changes",
+          replacementCode: finalData.replacementCode,
           approvalStatus: hasActionToApprove ? "pending" : undefined,
         },
       ]);
     } catch (requestError: any) {
+      setActiveTools([]);
       setMessagesList((previousList) => [
         ...previousList,
         {
           id: `copilot-${Date.now()}`,
           sender: "copilot",
-          text: requestError.message || "Failed to communicate with Copilot API.",
+          text: requestError.message || "Copilot encountered an issue processing request.",
           isError: true,
         },
       ]);
@@ -309,6 +341,12 @@ export default function CopilotDrawer({
             </div>
           </div>
         ))}
+        {activeTools.length > 0 && (
+          <div className="flex items-center gap-2 p-2 bg-zinc-800/60 border border-zinc-700/50 rounded text-[11px] text-zinc-300 animate-pulse">
+            <span className="text-cyan-400">🔧</span>
+            <span>Running tools: {activeTools.join(", ")}...</span>
+          </div>
+        )}
         <div ref={chatBottomRef} />
       </div>
 
