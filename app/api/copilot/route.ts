@@ -342,11 +342,12 @@ CRITICAL GUIDELINES:
           controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + "\n"));
         };
 
-        try {
+    try {
           let finalResponseData: any = null;
           let loopCounter = 0;
           const maxLoopLimit = 20;
           let isDone = false;
+          const executedToolSignatures = new Set<string>();
 
           while (!isDone && loopCounter < maxLoopLimit) {
             loopCounter++;
@@ -395,21 +396,42 @@ CRITICAL GUIDELINES:
                 functionCalls.map(async (fc: any) => {
                   const toolName = fc.name;
                   const toolArgs = fc.args || {};
+                  const readOnlyTools = [
+                    "list_projects",
+                    "list_files",
+                    "read_project_file",
+                    "compile_project",
+                    "get_compilation_log",
+                    "search_in_project",
+                    "validate_tex"
+                  ];
+                  const signature = `${toolName}:${JSON.stringify(fc.args)}`;
                   let toolResult;
-                  try {
-                    const finalArgs = {
-                      ...toolArgs,
-                      githubToken: userAccessToken || toolArgs?.githubToken,
+
+                  if (readOnlyTools.includes(toolName) && executedToolSignatures.has(signature)) {
+                    console.warn("Blocked duplicate read-only tool call:", signature);
+                    toolResult = {
+                      error: `Duplicate call to read-only tool ${toolName} with arguments ${JSON.stringify(fc.args)} blocked. Do not call the same read-only tool again; return your final response.`
                     };
-                    console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
-                    toolResult = await callLocalMCPTool(toolName, finalArgs);
-                    console.log("Tool execution succeeded:", toolName);
-                    sendChunk({ type: "tool_result", name: toolName, success: true, result: toolResult });
-                  } catch (err: any) {
-                    console.error("Tool execution failed:", toolName, err.message);
-                    sendChunk({ type: "tool_result", name: toolName, success: false, error: err.message });
-                    toolResult = { error: err.message || "Failed to execute tool" };
+                    sendChunk({ type: "tool_result", name: toolName, success: false, error: "Duplicate call blocked" });
+                  } else {
+                    executedToolSignatures.add(signature);
+                    try {
+                      const finalArgs = {
+                        ...toolArgs,
+                        githubToken: userAccessToken || toolArgs?.githubToken,
+                      };
+                      console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
+                      toolResult = await callLocalMCPTool(toolName, finalArgs);
+                      console.log("Tool execution succeeded:", toolName);
+                      sendChunk({ type: "tool_result", name: toolName, success: true, result: toolResult });
+                    } catch (err: any) {
+                      console.error("Tool execution failed:", toolName, err.message);
+                      sendChunk({ type: "tool_result", name: toolName, success: false, error: err.message });
+                      toolResult = { error: err.message || "Failed to execute tool" };
+                    }
                   }
+
                   return {
                     functionResponse: {
                       name: toolName,
