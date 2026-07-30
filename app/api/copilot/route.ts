@@ -59,19 +59,6 @@ const functionDeclarations = [
     }
   },
   {
-    name: "write_project_file",
-    description: "Writes or updates a file in an open-overleaf project and commits it to GitHub.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        projectName: { type: "STRING", description: "Name of the LaTeX project" },
-        filePath: { type: "STRING", description: "Relative file path inside project" },
-        content: { type: "STRING", description: "Updated file content" }
-      },
-      required: ["projectName", "filePath", "content"]
-    }
-  },
-  {
     name: "compile_project",
     description: "Triggers LaTeX compilation for an open-overleaf project on the backend, fetching fresh files from GitHub.",
     parameters: {

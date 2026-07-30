@@ -59,6 +59,25 @@ export default function CopilotDrawer({
   const [activeTools, setActiveTools] = useState<string[]>([]);
   const [rateLimitCountdownNumber, setRateLimitCountdownNumber] = useState(0);
   const chatBottomRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const handleStopPrompt = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoadingState(false);
+    setActiveTools([]);
+    setMessagesList((prev) => [
+      ...prev,
+      {
+        id: `copilot-stop-${Date.now()}`,
+        sender: "copilot",
+        text: "✕ Copilot execution stopped by user.",
+        isError: true,
+      },
+    ]);
+  };
 
   useEffect(() => {
     chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -99,6 +118,9 @@ export default function CopilotDrawer({
     }
 
     try {
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
       const response = await fetch("/api/copilot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -113,6 +135,7 @@ export default function CopilotDrawer({
           warningCount: warningCount,
           projectName: projectName,
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -401,13 +424,22 @@ export default function CopilotDrawer({
             }
             className="flex-1 bg-zinc-900 border border-zinc-800 rounded p-2 text-[11px] text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none h-14"
           />
-          <button
-            onClick={() => handleSendPrompt()}
-            disabled={isLoadingState || !promptInputText.trim()}
-            className="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white px-2.5 py-1.5 rounded text-xs font-medium transition-colors min-w-14"
-          >
-            {isLoadingState ? "..." : "Send"}
-          </button>
+          {isLoadingState ? (
+            <button
+              onClick={handleStopPrompt}
+              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1.5 rounded text-xs font-medium transition-colors min-w-14"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={() => handleSendPrompt()}
+              disabled={!promptInputText.trim()}
+              className="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white px-2.5 py-1.5 rounded text-xs font-medium transition-colors min-w-14"
+            >
+              Send
+            </button>
+          )}
         </div>
       </div>
     </div>
