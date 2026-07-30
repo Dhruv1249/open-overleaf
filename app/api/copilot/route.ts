@@ -192,8 +192,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     const warningCountNumber = payload.warningCount || 0;
     const projectName = payload.projectName || "";
 
+    console.log("Copilot call: prompt =", userPromptText, "project =", projectName, "file =", activeFilePath);
+
     const geminiApiKeyString = payload.apiKey || process.env.GEMINI_API_KEY || "";
     if (!geminiApiKeyString) {
+      console.error("Copilot error: GEMINI_API_KEY missing");
       return NextResponse.json(
         { success: false, message: "", error: "GEMINI_API_KEY environment variable is missing on server" },
         { status: 400 }
@@ -273,6 +276,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
 
     while (!isDone && loopCounter < maxLoopLimit) {
       loopCounter++;
+      console.log("Copilot loop turn:", loopCounter);
 
       const requestBodyPayload = {
         contents: conversationHistory,
@@ -298,10 +302,12 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
         });
 
         if (geminiHttpResponse.status === 429) {
+          console.warn("Gemini API rate limited (429), retrying...");
           if (attemptIndex < maxRetryAttemptsLimit) {
             await new Promise((resolve) => setTimeout(resolve, 30000));
             continue;
           }
+          console.error("Gemini API rate limit exceeded permanently");
           return NextResponse.json(
             { success: false, message: "", error: "Rate limit exceeded (429). Please wait 30 seconds before retrying." },
             { status: 429 }
@@ -310,6 +316,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
 
         if (!geminiHttpResponse.ok) {
           const errorResponseBody = await geminiHttpResponse.text();
+          console.error("Gemini API error status:", geminiHttpResponse.status, "body:", errorResponseBody);
           return NextResponse.json(
             { success: false, message: "", error: `Gemini API Error (${geminiHttpResponse.status}): ${errorResponseBody}` },
             { status: geminiHttpResponse.status }
@@ -322,6 +329,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
 
         if (contentPart?.functionCall) {
           functionCallToExecute = contentPart.functionCall;
+          console.log("Gemini requested function call:", functionCallToExecute.name, "args:", JSON.stringify(functionCallToExecute.args));
           conversationHistory.push({
             role: "model",
             parts: [contentPart],
@@ -330,12 +338,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
           break;
         } else {
           rawCandidateText = contentPart?.text || "";
+          console.log("Gemini returned text response length:", rawCandidateText.length);
           successAttempt = true;
           break;
         }
       }
 
       if (!successAttempt) {
+        console.error("Failed to fetch response from Gemini API inside loop");
         return NextResponse.json(
           { success: false, message: "", error: "Failed to communicate with Gemini API" },
           { status: 500 }
@@ -352,8 +362,11 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
             ...toolArgs,
             githubToken: userAccessToken || toolArgs?.githubToken,
           };
+          console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
           toolResult = await callLocalMCPTool(toolName, finalArgs);
+          console.log("Tool execution succeeded");
         } catch (err: any) {
+          console.error("Tool execution failed:", err.message);
           toolResult = { error: err.message || "Failed to execute tool" };
         }
 
@@ -381,7 +394,9 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
 
         try {
           parsedJsonResponse = JSON.parse(rawCandidateText);
+          console.log("Parsed JSON response successfully");
         } catch {
+          console.warn("Failed to parse response as JSON, falling back to plaintext");
           parsedJsonResponse = {
             message: "Generated update:",
             actionType: "modify_file",
@@ -396,12 +411,14 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     }
 
     if (!finalResponseData) {
+      console.error("Exited loop because max turn limit was hit without final response");
       return NextResponse.json(
         { success: false, message: "", error: "Failed to generate completion after maximum turns" },
         { status: 500 }
       );
     }
 
+    console.log("Copilot request completed successfully");
     return NextResponse.json({
       success: true,
       message: finalResponseData.message || "Refined successfully",
@@ -411,6 +428,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
       replacementCode: finalResponseData.replacementCode || "",
     });
   } catch (serverError: any) {
+    console.error("Server exception in Copilot route:", serverError);
     return NextResponse.json(
       { success: false, message: "", error: serverError.message || "Internal Copilot Error" },
       { status: 500 }
