@@ -50,7 +50,7 @@ export default function CopilotDrawer({
     {
       id: "welcome-1",
       sender: "copilot",
-      text: "Hello! I am your Open-Overleaf Copilot powered by gemini-3.6-flash-lite. Type a request or reference files using @filename to refine your LaTeX document.",
+      text: "Hello! I am your Open-Overleaf Copilot powered by gemini-3.5-flash-lite. Type a request or reference files using @filename to refine your LaTeX document.",
     },
   ]);
   const [isLoadingState, setIsLoadingState] = useState(false);
@@ -199,7 +199,7 @@ export default function CopilotDrawer({
           <span className="text-lg">✨</span>
           <div>
             <h2 className="font-semibold text-xs text-zinc-200">Overleaf Copilot</h2>
-            <p className="text-[10px] text-zinc-400">gemini-3.6-flash-lite</p>
+            <p className="text-[10px] text-zinc-400">gemini-3.5-flash-lite</p>
           </div>
         </div>
         <div className="flex items-center gap-2">

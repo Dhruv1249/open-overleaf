@@ -174,7 +174,7 @@ async function callLocalMCPTool(toolName: string, toolArguments: Record<string, 
 }
 
 /**
- * Handles AI Copilot code generation requests powered by gemini-3.6-flash-lite with 429 retry backoff.
+ * Handles AI Copilot code generation requests powered by gemini-3.5-flash-lite with 429 retry backoff.
  */
 export async function POST(request: NextRequest): Promise<NextResponse<CopilotResponsePayload>> {
   try {
@@ -252,7 +252,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
     compiledContextPrompt += `  "replacementCode": "The refined or generated LaTeX code snippet to insert or replace"\n`;
     compiledContextPrompt += `}\n`;
 
-    const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash-lite:generateContent?key=${geminiApiKeyString}`;
+    const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiApiKeyString}`;
 
     const conversationHistory: any[] = [
       {
