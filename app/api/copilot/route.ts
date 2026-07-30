@@ -184,6 +184,15 @@ function sortObjectKeys(obj: any): any {
     }, {});
 }
 
+function isSimpleGreeting(prompt: string): boolean {
+  const clean = prompt.trim().toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g,"");
+  const greetings = [
+    "hello", "hi", "hey", "greetings", "good morning", "good afternoon", 
+    "good evening", "howdy", "sup", "yo", "test", "halo", "ola", "namaste"
+  ];
+  return greetings.includes(clean);
+}
+
 const modelsCascade = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -275,27 +284,31 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
     }
 
+    const isGreeting = isSimpleGreeting(userPromptText);
+
     let compiledContextPrompt = `You are an expert LaTeX Copilot AI Assistant inside Open-Overleaf.\n\n`;
     if (projectName) {
       compiledContextPrompt += `Current Project Name: ${projectName}\n`;
     }
     compiledContextPrompt += `Active File: ${activeFilePath}\n`;
 
-    if (fullFileContentString) {
-      compiledContextPrompt += `Full Content of ${activeFilePath}:\n\`\`\`latex\n${fullFileContentString}\n\`\`\`\n\n`;
-    }
-
-    if (referencedFilesList.length > 0) {
-      compiledContextPrompt += `Referenced Files Context (@mentions):\n`;
-      for (const fileNameItem of referencedFilesList) {
-        compiledContextPrompt += `--- ${fileNameItem} ---\n${fileContextsMap[fileNameItem]}\n\n`;
+    if (!isGreeting) {
+      if (fullFileContentString) {
+        compiledContextPrompt += `Full Content of ${activeFilePath}:\n\`\`\`latex\n${fullFileContentString}\n\`\`\`\n\n`;
       }
-    }
 
-    if (compileLogString || errorCountNumber > 0 || warningCountNumber > 0) {
-      compiledContextPrompt += `LaTeX Compilation Status & Diagnostics:\n`;
-      compiledContextPrompt += `Error Count: ${errorCountNumber}, Warning Count: ${warningCountNumber}\n`;
-      compiledContextPrompt += `Log Output:\n\`\`\`\n${compileLogString.slice(-1500)}\n\`\`\`\n\n`;
+      if (referencedFilesList.length > 0) {
+        compiledContextPrompt += `Referenced Files Context (@mentions):\n`;
+        for (const fileNameItem of referencedFilesList) {
+          compiledContextPrompt += `--- ${fileNameItem} ---\n${fileContextsMap[fileNameItem]}\n\n`;
+        }
+      }
+
+      if (compileLogString || errorCountNumber > 0 || warningCountNumber > 0) {
+        compiledContextPrompt += `LaTeX Compilation Status & Diagnostics:\n`;
+        compiledContextPrompt += `Error Count: ${errorCountNumber}, Warning Count: ${warningCountNumber}\n`;
+        compiledContextPrompt += `Log Output:\n\`\`\`\n${compileLogString.slice(-1500)}\n\`\`\`\n\n`;
+      }
     }
 
     compiledContextPrompt += `GUIDELINES:\n`;
@@ -334,7 +347,8 @@ CRITICAL GUIDELINES:
 5. NEVER write your own response JSON or assistant messages into files like '.overleaf.json' or '.tex' unless specifically instructed by the user to write that content.
 6. To inspect the contents, read the text, or see code inside any file (like a .tex, .json, or .bib file), you MUST call the 'read_project_file' tool. Do NOT use 'compile_project' or other tools to read/inspect files.
 7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
-8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.`
+8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.
+9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' to attempt to fix the error.`
         }
       ]
     };
@@ -370,7 +384,7 @@ CRITICAL GUIDELINES:
             const responseResult = await fetchGeminiWithFallback(
               {
                 contents: conversationHistory,
-                tools: [
+                tools: isGreeting ? [] : [
                   {
                     functionDeclarations,
                   },
@@ -413,39 +427,24 @@ CRITICAL GUIDELINES:
                   const callId = `call-${loopCounter}-${i}`;
                   const toolName = fc.name;
                   const toolArgs = fc.args || {};
-                  const readOnlyTools = [
-                    "list_projects",
-                    "list_files",
-                    "read_project_file",
-                    "compile_project",
-                    "get_compilation_log",
-                    "search_in_project",
-                    "validate_tex"
-                  ];
                   const sortedArgs = sortObjectKeys(fc.args || {});
                   const signature = `${toolName}:${JSON.stringify(sortedArgs)}`;
                   let toolResult;
 
-                  if (readOnlyTools.includes(toolName) && executedToolSignatures.has(signature)) {
-                    console.warn("Blocked duplicate read-only tool call:", signature);
-                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: "Infinite loop protection blocked duplicate tool call" });
-                    throw new Error(`Infinite loop detected: duplicate call to read-only tool '${toolName}' with arguments ${JSON.stringify(fc.args)} was blocked.`);
-                  } else {
-                    executedToolSignatures.add(signature);
-                    try {
-                      const finalArgs = {
-                        ...toolArgs,
-                        githubToken: userAccessToken || toolArgs?.githubToken,
-                      };
-                      console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
-                      toolResult = await callLocalMCPTool(toolName, finalArgs);
-                      console.log("Tool execution succeeded:", toolName);
-                      sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult });
-                    } catch (err: any) {
-                      console.error("Tool execution failed:", toolName, err.message);
-                      sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: err.message });
-                      toolResult = { error: err.message || "Failed to execute tool" };
-                    }
+                  executedToolSignatures.add(signature);
+                  try {
+                    const finalArgs = {
+                      ...toolArgs,
+                      githubToken: userAccessToken || toolArgs?.githubToken,
+                    };
+                    console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
+                    toolResult = await callLocalMCPTool(toolName, finalArgs);
+                    console.log("Tool execution succeeded:", toolName);
+                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult });
+                  } catch (err: any) {
+                    console.error("Tool execution failed:", toolName, err.message);
+                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: err.message });
+                    toolResult = { error: err.message || "Failed to execute tool" };
                   }
 
                   return {
