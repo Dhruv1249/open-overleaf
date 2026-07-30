@@ -1284,25 +1284,7 @@ export default function AppShell() {
           />
         )}
 
-        {/* ── AI Copilot drawer overlay ── */}
-        {showCopilot && selectedFile && project && (
-          <CopilotDrawer
-            isOpen={showCopilot}
-            onClose={() => setShowCopilot(false)}
-            activeFilePath={selectedFile}
-            selectedText=""
-            fullFileContent={fileContent}
-            projectFiles={selectedFile ? [selectedFile] : ["main.tex"]}
-            getFileContent={(targetFilePath) =>
-              targetFilePath === selectedFile ? fileContent : ""
-            }
-            onApplyCode={(replacementCode) => {
-              setFileContent(replacementCode);
-              handleSaveFile(replacementCode);
-            }}
-            projectName={project || undefined}
-          />
-        )}
+
       </div>
 
       {/* ── Mobile navigation bar ── */}
