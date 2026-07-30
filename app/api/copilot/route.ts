@@ -358,7 +358,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<CopilotRe
         }
 
         conversationHistory.push({
-          role: "function",
+          role: "user",
           parts: [
             {
               functionResponse: {
