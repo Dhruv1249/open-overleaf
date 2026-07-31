@@ -300,7 +300,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     compiledContextPrompt += `GUIDELINES:\n`;
     compiledContextPrompt += `1. Respond directly without calling tools if the user is greeting you, saying hello, asking a general question, or the request does not require filesystem/compilation actions.\n`;
-    compiledContextPrompt += `2. Only call tools if they are strictly necessary to perform or answer the user request.\n\n`;
+    compiledContextPrompt += `2. Only call tools if they are strictly necessary to perform or answer the user request.\n`;
+    compiledContextPrompt += `3. ALWAYS explain your thinking process and reasoning in a text part before selecting or calling any tool. State what you are planning to do, which tool you are choosing, and why.\n\n`;
 
     if (selectedTextSnippet) {
       compiledContextPrompt += `User Highlighted Selection:\n\`\`\`latex\n${selectedTextSnippet}\n\`\`\`\n`;
@@ -335,7 +336,8 @@ CRITICAL GUIDELINES:
 6. To inspect the contents, read the text, or see code inside any file (like a .tex, .json, or .bib file), you MUST call the 'read_project_file' tool. Do NOT use 'compile_project' or other tools to read/inspect files.
 7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
 8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.
-9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' to attempt to fix the error.`
+9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' to attempt to fix the error.
+10. ALWAYS explain your thinking process and reasoning in a text part before selecting or calling any tool. State what you are planning to do, which tool you are choosing, and why.`
         }
       ]
     };
@@ -377,9 +379,6 @@ CRITICAL GUIDELINES:
                   },
                 ],
                 systemInstruction,
-                generationConfig: {
-                  responseMimeType: "application/json",
-                },
               },
               geminiApiKeyString
             );
@@ -400,6 +399,16 @@ CRITICAL GUIDELINES:
               .map((p: any) => p.functionCall);
 
             if (functionCalls.length > 0) {
+              const textParts = parts
+                .filter((p: any) => p.text)
+                .map((p: any) => p.text)
+                .join("\n")
+                .trim();
+
+              if (textParts) {
+                sendChunk({ type: "thought", text: textParts });
+              }
+
               conversationHistory.push(content);
               console.log("Gemini requested batched function calls:", functionCalls.map((fc: any) => fc.name).join(", "));
 
@@ -450,7 +459,18 @@ CRITICAL GUIDELINES:
               });
             } else {
               isDone = true;
-              const rawCandidateText = parts[0]?.text || "";
+              let rawCandidateText = parts[0]?.text || "";
+              rawCandidateText = rawCandidateText.trim();
+              if (rawCandidateText.startsWith("```")) {
+                const lines = rawCandidateText.split("\n");
+                if (lines[0].startsWith("```")) {
+                  lines.shift();
+                }
+                if (lines[lines.length - 1].startsWith("```")) {
+                  lines.pop();
+                }
+                rawCandidateText = lines.join("\n").trim();
+              }
               console.log("Gemini returned text response length:", rawCandidateText.length);
 
               let parsedJsonResponse = {

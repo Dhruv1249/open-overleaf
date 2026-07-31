@@ -14,6 +14,7 @@ export interface ChatMessageItem {
   isError?: boolean;
   isToolCall?: boolean;
   toolStatus?: "running" | "success" | "failed";
+  isThought?: boolean;
 }
 
 export interface CopilotDrawerProps {
@@ -163,7 +164,17 @@ export default function CopilotDrawer({
           if (!line.trim()) continue;
           try {
             const chunk = JSON.parse(line);
-            if (chunk.type === "tool_start") {
+            if (chunk.type === "thought") {
+              setMessagesList((prev) => [
+                ...prev,
+                {
+                  id: `thought-${Date.now()}-${Math.random()}`,
+                  sender: "copilot",
+                  text: chunk.text,
+                  isThought: true,
+                },
+              ]);
+            } else if (chunk.type === "tool_start") {
               setActiveTools((prev) => {
                 if (prev.includes(chunk.name)) return prev;
                 return [...prev, chunk.name];
@@ -346,11 +357,18 @@ export default function CopilotDrawer({
                     : messageItem.toolStatus === "success"
                     ? "bg-zinc-800/70 border border-zinc-700/60 text-zinc-300 rounded-bl-none font-mono text-[10px]"
                     : "bg-rose-950/40 border border-rose-800/40 text-rose-300 rounded-bl-none font-mono text-[10px]"
+                  : messageItem.isThought
+                  ? "bg-zinc-900/60 border border-zinc-800/50 text-zinc-400 rounded-bl-none italic"
                   : messageItem.isError
                   ? "bg-rose-950 border border-rose-800 text-rose-200 rounded-bl-none"
                   : "bg-zinc-800 text-zinc-200 rounded-bl-none border border-zinc-700/50"
               }`}
             >
+              {messageItem.isThought && (
+                <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-semibold mb-1 uppercase tracking-wider select-none">
+                  <span>💭 Thinking Process</span>
+                </div>
+              )}
               <p className="whitespace-pre-wrap leading-relaxed">{messageItem.text}</p>
 
               {messageItem.replacementCode && (
