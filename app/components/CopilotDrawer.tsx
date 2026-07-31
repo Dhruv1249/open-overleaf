@@ -61,6 +61,19 @@ export default function CopilotDrawer({
   const [rateLimitCountdownNumber, setRateLimitCountdownNumber] = useState(0);
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (textarea) {
+      textarea.style.height = "32px";
+      if (promptInputText) {
+        if (textarea.scrollHeight > 36) {
+          textarea.style.height = `${Math.min(110, textarea.scrollHeight)}px`;
+        }
+      }
+    }
+  }, [promptInputText]);
 
   const handleStopPrompt = () => {
     if (abortControllerRef.current) {
@@ -184,7 +197,7 @@ export default function CopilotDrawer({
                 {
                   id: chunk.id,
                   sender: "copilot",
-                  text: `🔧 Running ${chunk.name}${chunk.arguments ? `(${JSON.stringify(chunk.arguments)})` : ""}...`,
+                  text: `Running ${chunk.name}${chunk.arguments ? `(${JSON.stringify(chunk.arguments)})` : ""}...`,
                   isToolCall: true,
                   toolStatus: "running",
                 },
@@ -223,21 +236,26 @@ export default function CopilotDrawer({
         throw new Error("No final response received from AI assistant.");
       }
 
-      const hasActionToApprove = finalData.actionType && finalData.actionType !== "none";
+      const isModify = finalData.actionType === "modify_file";
+      const isDelete = finalData.actionType === "delete_file";
 
       setMessagesList((previousList) => [
         ...previousList,
         {
           id: `copilot-${Date.now()}`,
           sender: "copilot",
-          text: finalData.message || "Here is your proposed update:",
+          text: finalData.message || (isModify ? "Proposed changes loaded in editor." : "Here is your proposed update:"),
           actionType: finalData.actionType,
           targetPath: finalData.targetPath || activeFilePath,
           actionDescription: finalData.actionDescription || "Apply proposed changes",
           replacementCode: finalData.replacementCode,
-          approvalStatus: hasActionToApprove ? "pending" : undefined,
+          approvalStatus: isDelete ? "pending" : undefined,
         },
       ]);
+
+      if (isModify && finalData.replacementCode) {
+        onApplyCode(finalData.replacementCode, false);
+      }
     } catch (requestError: any) {
       setActiveTools([]);
       setMessagesList((previousList) => [
@@ -289,7 +307,6 @@ export default function CopilotDrawer({
     <div className="flex flex-col h-full bg-zinc-900 border-t border-zinc-800 text-zinc-100 shadow-2xl">
       <div className="p-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-950">
         <div className="flex items-center gap-2">
-          <span className="text-lg">✨</span>
           <div>
             <h2 className="font-semibold text-xs text-zinc-200">Overleaf Copilot</h2>
             <p className="text-[10px] text-zinc-400">gemini-3.5-flash-lite</p>
@@ -329,20 +346,21 @@ export default function CopilotDrawer({
 
       {selectedText && (
         <div className="mx-3 mt-2 p-1.5 bg-amber-950/40 border border-amber-800/40 rounded text-[11px] text-amber-300 flex items-center justify-between">
-          <span>✨ Highlighted Selection Active ({selectedText.split("\n").length} lines)</span>
+          <span>Highlighted Selection Active ({selectedText.split("\n").length} lines)</span>
         </div>
       )}
 
       {rateLimitCountdownNumber > 0 && (
         <div className="mx-3 mt-2 p-2 bg-rose-950/50 border border-rose-800/50 rounded text-xs text-rose-300">
-          ⏳ Rate limit reached (429). Retrying in {rateLimitCountdownNumber}s... (Attempt 1/3)
+          Rate limit reached (429). Retrying in {rateLimitCountdownNumber}s... (Attempt 1/3)
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
+      <div className="flex-1 overflow-y-auto panel-scroll p-3 space-y-4 min-h-0">
         {messagesList.map((messageItem) => (
           <div
             key={messageItem.id}
+            style={{ marginBottom: "16px" }}
             className={`flex flex-col text-xs ${
               messageItem.sender === "user" ? "items-end" : "items-start"
             }`}
@@ -366,13 +384,13 @@ export default function CopilotDrawer({
             >
               {messageItem.isThought && (
                 <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 font-semibold mb-1 uppercase tracking-wider select-none">
-                  <span>💭 Thinking Process</span>
+                  <span>Thinking Process</span>
                 </div>
               )}
               <p className="whitespace-pre-wrap leading-relaxed">{messageItem.text}</p>
 
               {messageItem.replacementCode && (
-                <div className="mt-2 bg-zinc-950 p-2 rounded border border-zinc-800 font-mono text-[10px] overflow-x-auto max-h-36">
+                <div className="mt-2 bg-zinc-950 p-2 rounded border border-zinc-800 font-mono text-[10px] overflow-x-auto panel-scroll max-h-36">
                   <pre className="text-emerald-400 whitespace-pre-wrap">{messageItem.replacementCode}</pre>
                 </div>
               )}
@@ -380,7 +398,7 @@ export default function CopilotDrawer({
               {messageItem.approvalStatus === "pending" && (
                 <div className="mt-2.5 p-2 bg-amber-950/60 border border-amber-800/60 rounded space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-amber-200">
-                    <span className="font-semibold">⚠️ Approval Required</span>
+                    <span className="font-semibold">Approval Required</span>
                     <span className="font-mono text-[10px] text-amber-400">{messageItem.targetPath}</span>
                   </div>
                   <p className="text-[11px] text-zinc-300">{messageItem.actionDescription}</p>
@@ -389,13 +407,13 @@ export default function CopilotDrawer({
                       onClick={() => handleApproveAction(messageItem.id)}
                       className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-1 rounded text-[11px] font-medium transition-colors"
                     >
-                      ✓ Approve & Apply
+                      Approve & Apply
                     </button>
                     <button
                       onClick={() => handleRejectAction(messageItem.id)}
                       className="flex-1 bg-zinc-700 hover:bg-zinc-600 text-zinc-200 py-1 rounded text-[11px] font-medium transition-colors"
                     >
-                      ✕ Reject
+                      Reject
                     </button>
                   </div>
                 </div>
@@ -403,13 +421,13 @@ export default function CopilotDrawer({
 
               {messageItem.approvalStatus === "approved" && (
                 <div className="mt-2 text-[10px] text-emerald-400 font-medium">
-                  ✓ Action Approved & Applied
+                  Action Approved & Applied
                 </div>
               )}
 
               {messageItem.approvalStatus === "rejected" && (
                 <div className="mt-2 text-[10px] text-zinc-400 font-medium">
-                  ✕ Action Rejected
+                  Action Rejected
                 </div>
               )}
             </div>
@@ -417,16 +435,16 @@ export default function CopilotDrawer({
         ))}
         {activeTools.length > 0 && (
           <div className="flex items-center gap-2 p-2 bg-zinc-800/60 border border-zinc-700/50 rounded text-[11px] text-zinc-300 animate-pulse">
-            <span className="text-cyan-400">🔧</span>
             <span>Running tools: {activeTools.join(", ")}...</span>
           </div>
         )}
         <div ref={chatBottomRef} />
       </div>
 
-      <div className="p-2 border-t border-zinc-800 bg-zinc-950 space-y-1.5">
+      <div className="p-1.5 border-t border-zinc-800 bg-zinc-950">
         <div className="flex gap-1.5">
           <textarea
+            ref={textareaRef}
             value={promptInputText}
             onChange={(e) => setPromptInputText(e.target.value)}
             onKeyDown={(e) => {
@@ -440,12 +458,12 @@ export default function CopilotDrawer({
                 ? "Refine highlighted selection..."
                 : "Ask Copilot to edit or fix LaTeX..."
             }
-            className="flex-1 bg-zinc-900 border border-zinc-800 rounded p-2 text-[11px] text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none h-14"
+            className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2.5 py-[6px] text-[11px] text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none min-h-[32px] max-h-[110px] h-auto overflow-y-auto panel-scroll"
           />
           {isLoadingState ? (
             <button
               onClick={handleStopPrompt}
-              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 py-1.5 rounded text-xs font-medium transition-colors min-w-14"
+              className="bg-rose-600 hover:bg-rose-500 text-white px-2.5 rounded text-xs font-medium transition-colors min-w-14 self-end h-[32px] flex items-center justify-center"
             >
               Stop
             </button>
@@ -453,7 +471,7 @@ export default function CopilotDrawer({
             <button
               onClick={() => handleSendPrompt()}
               disabled={!promptInputText.trim()}
-              className="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white px-2.5 py-1.5 rounded text-xs font-medium transition-colors min-w-14"
+              className="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white px-2.5 rounded text-xs font-medium transition-colors min-w-14 self-end h-[32px] flex items-center justify-center"
             >
               Send
             </button>

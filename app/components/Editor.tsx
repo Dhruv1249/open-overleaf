@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import EditorMono from "@monaco-editor/react";
+import EditorMono, { DiffEditor } from "@monaco-editor/react";
+import { diffLines } from "diff";
 import { LATEX_COMMANDS, ENVIRONMENTS, PACKAGES, DOCUMENT_CLASSES, type LatexCompletion } from "../lib/latex-completions";
 import { parseDocumentCommands, buildInsertText, type ParsedCommand } from "../lib/latex-doc-parser";
 
@@ -492,16 +493,161 @@ function getOrConnectLsp(project: string): Promise<LspClient | null> {
 }
 
 // ── Editor component ──────────────────────────────────────────────────────────
+export interface DiffHunk {
+  id: string;
+  originalLines: string[];
+  modifiedLines: string[];
+  status: "pending" | "accepted" | "rejected";
+  line: number;
+}
+
+export interface Segment {
+  type: "unchanged" | "hunk";
+  lines: string[];
+  modifiedLines?: string[];
+  hunkId?: string;
+}
+
+export function parseDiff(original: string, proposed: string) {
+  const changes = diffLines(original, proposed);
+  const segments: Segment[] = [];
+  const hunks: DiffHunk[] = [];
+  let hunkCounter = 0;
+  let originalLine = 1;
+  let modifiedLine = 1;
+
+  for (let i = 0; i < changes.length; i++) {
+    const change = changes[i];
+    const changeLines = change.value.replace(/\r/g, "").split("\n");
+    if (changeLines.length > 1 && changeLines[changeLines.length - 1] === "") {
+      changeLines.pop();
+    }
+
+    if (!change.added && !change.removed) {
+      segments.push({
+        type: "unchanged",
+        lines: changeLines,
+      });
+      originalLine += changeLines.length;
+      modifiedLine += changeLines.length;
+    } else if (change.removed) {
+      const nextChange = i + 1 < changes.length ? changes[i + 1] : null;
+      if (nextChange && nextChange.added) {
+        const nextLines = nextChange.value.replace(/\r/g, "").split("\n");
+        if (nextLines.length > 1 && nextLines[nextLines.length - 1] === "") {
+          nextLines.pop();
+        }
+        hunkCounter++;
+        const id = `hunk-${hunkCounter}`;
+        hunks.push({
+          id,
+          originalLines: changeLines,
+          modifiedLines: nextLines,
+          status: "pending",
+          line: modifiedLine,
+        });
+        segments.push({
+          type: "hunk",
+          lines: changeLines,
+          modifiedLines: nextLines,
+          hunkId: id,
+        });
+        originalLine += changeLines.length;
+        modifiedLine += nextLines.length;
+        i++;
+      } else {
+        hunkCounter++;
+        const id = `hunk-${hunkCounter}`;
+        hunks.push({
+          id,
+          originalLines: changeLines,
+          modifiedLines: [],
+          status: "pending",
+          line: modifiedLine,
+        });
+        segments.push({
+          type: "hunk",
+          lines: changeLines,
+          modifiedLines: [],
+          hunkId: id,
+        });
+        originalLine += changeLines.length;
+      }
+    } else if (change.added) {
+      hunkCounter++;
+      const id = `hunk-${hunkCounter}`;
+      hunks.push({
+        id,
+        originalLines: [],
+        modifiedLines: changeLines,
+        status: "pending",
+        line: modifiedLine,
+      });
+      segments.push({
+        type: "hunk",
+        lines: [],
+        modifiedLines: changeLines,
+        hunkId: id,
+      });
+      modifiedLine += changeLines.length;
+    }
+  }
+
+  return { segments, hunks };
+}
+
+function reconstruct(segments: Segment[], hunks: DiffHunk[], targetHunkId: string, action: "accept" | "reject") {
+  const lines: string[] = [];
+  for (const segment of segments) {
+    if (segment.type === "unchanged") {
+      lines.push(...segment.lines);
+    } else {
+      const hunk = hunks.find(h => h.id === segment.hunkId);
+      if (hunk) {
+        if (hunk.id === targetHunkId) {
+          if (action === "accept") {
+            lines.push(...hunk.modifiedLines);
+          } else {
+            lines.push(...hunk.originalLines);
+          }
+        } else {
+          lines.push(...hunk.originalLines);
+        }
+      } else {
+        lines.push(...segment.lines);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
 type EditorProps = {
   content: string;
   onSave: (newContent: string) => Promise<void>;
-  onContentChange?: (content: string) => void;  // fires on every keystroke
+  onContentChange?: (content: string) => void;
   filename?: string;
   project?: string;
   filePath?: string;
+  pendingDiff?: { original: string; modified: string } | null;
+  onAcceptDiffHunk?: (committedContent: string, remainingModified: string) => void;
+  onRejectDiffHunk?: (newEditorText: string) => void;
+  onAcceptAllDiffs?: (acceptedContent: string) => void;
+  onDiscardAllDiffs?: () => void;
 };
 
-export default function Editor({ content: initial, onSave, onContentChange, filename, project, filePath }: EditorProps) {
+export default function Editor({
+  content: initial,
+  onSave,
+  onContentChange,
+  filename,
+  project,
+  filePath,
+  pendingDiff,
+  onAcceptDiffHunk,
+  onRejectDiffHunk,
+  onAcceptAllDiffs,
+  onDiscardAllDiffs,
+}: EditorProps) {
   const [value, setValue] = useState(initial || "");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -513,18 +659,29 @@ export default function Editor({ content: initial, onSave, onContentChange, file
   const docVersion = useRef(0);
   const themeObsRef = useRef<MutationObserver | null>(null);
 
+  const initialRef = useRef(initial);
+  const pendingDiffRef = useRef(pendingDiff);
+  const onContentChangeRef = useRef(onContentChange);
+  const filePathRef = useRef(filePath);
+  const projectRef = useRef(project);
+
+  useEffect(() => { initialRef.current = initial; }, [initial]);
+  useEffect(() => { pendingDiffRef.current = pendingDiff; }, [pendingDiff]);
+  useEffect(() => { onContentChangeRef.current = onContentChange; }, [onContentChange]);
+  useEffect(() => { filePathRef.current = filePath; }, [filePath]);
+  useEffect(() => { projectRef.current = project; }, [project]);
+
   const language = getLanguage(filename);
 
-  // Reset content when file changes (key={selectedFile} in AppShell already
-  // causes a full remount on file switch, but we keep filename in deps as a
-  // safety net. Intentionally NOT including `initial` — auto-save updates
-  // fileContent which would otherwise reset the editor while the user is typing).
   useEffect(() => {
-    setValue(initial || "");
+    if (pendingDiff) {
+      setValue(pendingDiff.modified);
+    } else {
+      setValue(initial || "");
+    }
     setDirty(false);
     docVersion.current = 0;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filename]);
+  }, [filename, pendingDiff, initial]);
 
   // ── TexLab connection for diagnostics ─────────────────────────────────────
   useEffect(() => {
@@ -584,20 +741,6 @@ export default function Editor({ content: initial, onSave, onContentChange, file
    
   }, [language, filePath, project, initial]);
 
-  // ── Change & save ─────────────────────────────────────────────────────────
-  const handleChange = useCallback((v: string | undefined) => {
-    const newVal = v || "";
-    setValue(newVal);
-    setDirty(newVal !== initial);
-    onContentChange?.(newVal);   // bubble to AppShell for auto-compile
-    if (lspRef.current && filePath && project) {
-      lspRef.current.sendNotification("textDocument/didChange", {
-        textDocument: { uri: fileUri(project, filePath), version: ++docVersion.current },
-        contentChanges: [{ text: newVal }],
-      });
-    }
-  }, [initial, filePath, project]);
-
   const handleSave = useCallback(async () => {
     if (!dirty || saving) return;
     setSaving(true);
@@ -612,6 +755,61 @@ export default function Editor({ content: initial, onSave, onContentChange, file
     } finally { setSaving(false); }
   }, [dirty, saving, value, onSave, filePath, project]);
 
+  const { hunks } = pendingDiff ? parseDiff(pendingDiff.original, pendingDiff.modified) : { hunks: [] };
+
+  useEffect(() => {
+    if (pendingDiff) {
+      const { hunks: currentHunks } = parseDiff(pendingDiff.original, pendingDiff.modified);
+      if (currentHunks.length === 0 && onDiscardAllDiffs) {
+        onDiscardAllDiffs();
+      }
+    }
+  }, [pendingDiff, onDiscardAllDiffs]);
+
+  const handleAcceptHunk = useCallback((hunkId: string) => {
+    if (!pendingDiff || !onAcceptDiffHunk) return;
+    const currentVal = editorRef.current ? editorRef.current.getValue() : value;
+    const { segments, hunks: originalHunks } = parseDiff(pendingDiff.original, pendingDiff.modified);
+    const committedText = reconstruct(segments, originalHunks, hunkId, "accept");
+    onAcceptDiffHunk(committedText, currentVal);
+  }, [pendingDiff, onAcceptDiffHunk, value]);
+
+  const handleRejectHunk = useCallback((hunkId: string) => {
+    if (!pendingDiff || !onRejectDiffHunk) return;
+    const { segments, hunks: originalHunks } = parseDiff(pendingDiff.original, pendingDiff.modified);
+    const lines: string[] = [];
+    for (const segment of segments) {
+      if (segment.type === "unchanged") {
+        lines.push(...segment.lines);
+      } else {
+        const hunk = originalHunks.find(h => h.id === segment.hunkId);
+        if (hunk) {
+          if (hunk.id === hunkId) {
+            lines.push(...hunk.originalLines);
+          } else {
+            lines.push(...hunk.modifiedLines);
+          }
+        } else {
+          lines.push(...segment.lines);
+        }
+      }
+    }
+    const newEditorText = lines.join("\n");
+    onRejectDiffHunk(newEditorText);
+  }, [pendingDiff, onRejectDiffHunk]);
+
+  const handleAcceptAll = useCallback(() => {
+    if (onAcceptAllDiffs && editorRef.current) {
+      onAcceptAllDiffs(editorRef.current.getValue());
+    }
+  }, [onAcceptAllDiffs]);
+
+  const handleDiscardAll = useCallback(() => {
+    if (onDiscardAllDiffs) {
+      onDiscardAllDiffs();
+    }
+  }, [onDiscardAllDiffs]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") { e.preventDefault(); handleSave(); }
@@ -620,27 +818,123 @@ export default function Editor({ content: initial, onSave, onContentChange, file
     return () => window.removeEventListener("keydown", handler);
   }, [handleSave]);
 
-  // ── Monaco mount ──────────────────────────────────────────────────────────
+  const hunksRef = useRef(hunks);
+  useEffect(() => { hunksRef.current = hunks; }, [hunks]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      (window as any).__ooActiveAcceptHunk = handleAcceptHunk;
+      (window as any).__ooActiveRejectHunk = handleRejectHunk;
+    }
+    return () => {
+      if (typeof window !== "undefined") {
+        (window as any).__ooActiveAcceptHunk = null;
+        (window as any).__ooActiveRejectHunk = null;
+      }
+    };
+  }, [handleAcceptHunk, handleRejectHunk]);
+
   const handleEditorMount = useCallback((editor: any, monaco: any) => {
-    editorRef.current = editor;
     monacoRef.current = monaco;
+    const isDiff = !!editor.getModifiedEditor;
+    const actualEditor = isDiff ? editor.getModifiedEditor() : editor;
+    editorRef.current = actualEditor;
+
+    actualEditor.updateOptions({
+      codeLens: true
+    });
+    if (editor.getOriginalEditor) {
+      editor.getOriginalEditor().updateOptions({
+        codeLens: true
+      });
+    }
 
     registerLatex(monaco);
     registerBibtex(monaco);
     defineThemes(monaco);
 
-    // Register providers once — completions are purely built-in (no TexLab)
     registerProvidersOnce(
       monaco,
-      () => editorRef.current?.getModel(),
+      () => actualEditor.getModel(),
       () => lspRef.current,
     );
 
-    // Auto-trigger suggestions on `\`
-    editor.onDidChangeModelContent((e: any) => {
+    const acceptCommandId = "open-overleaf.acceptHunk";
+    const rejectCommandId = "open-overleaf.rejectHunk";
+
+    if (typeof window !== "undefined" && !(window as any).__ooCommandsRegistered) {
+      (window as any).__ooCommandsRegistered = true;
+      monaco.editor.registerCommand(acceptCommandId, (accessor: any, hunkId: string) => {
+        (window as any).__ooActiveAcceptHunk?.(hunkId);
+      });
+      monaco.editor.registerCommand(rejectCommandId, (accessor: any, hunkId: string) => {
+        (window as any).__ooActiveRejectHunk?.(hunkId);
+      });
+    }
+
+    const createCodeLensProvider = (langId: string) => {
+      return monaco.languages.registerCodeLensProvider(langId, {
+        provideCodeLenses: (model: any) => {
+          if (model.uri.toString() !== actualEditor.getModel()?.uri.toString()) return { lenses: [], dispose: () => {} };
+          const currentHunks = hunksRef.current;
+          const lenses: any[] = [];
+          currentHunks.forEach(hunk => {
+            if (hunk.status !== "pending") return;
+            const line = Math.max(1, Math.min(hunk.line, model.getLineCount()));
+            lenses.push({
+              range: {
+                startLineNumber: line,
+                startColumn: 1,
+                endLineNumber: line,
+                endColumn: 1
+              },
+              id: `accept-${hunk.id}`,
+              command: {
+                id: acceptCommandId,
+                title: "Accept",
+                arguments: [hunk.id]
+              }
+            });
+            lenses.push({
+              range: {
+                startLineNumber: line,
+                startColumn: 1,
+                endLineNumber: line,
+                endColumn: 1
+              },
+              id: `reject-${hunk.id}`,
+              command: {
+                id: rejectCommandId,
+                title: "Reject",
+                arguments: [hunk.id]
+              }
+            });
+          });
+          return { lenses, dispose: () => {} };
+        },
+        resolveCodeLens: (model: any, codeLens: any) => codeLens
+      });
+    };
+
+    const provider1 = createCodeLensProvider("latex");
+    const provider2 = createCodeLensProvider("plaintext");
+
+    actualEditor.onDidChangeModelContent((e: any) => {
+      const newVal = actualEditor.getValue();
+      setValue(newVal);
+      setDirty(newVal !== (pendingDiffRef.current ? pendingDiffRef.current.original : initialRef.current));
+      onContentChangeRef.current?.(newVal);
+
+      if (lspRef.current && filePathRef.current && projectRef.current) {
+        lspRef.current.sendNotification("textDocument/didChange", {
+          textDocument: { uri: fileUri(projectRef.current, filePathRef.current), version: ++docVersion.current },
+          contentChanges: [{ text: newVal }],
+        });
+      }
+
       const last = e.changes?.[e.changes.length - 1];
       if (last?.text === "\\") {
-        setTimeout(() => editor.trigger("latex", "editor.action.triggerSuggest", {}), 50);
+        setTimeout(() => actualEditor.trigger("latex", "editor.action.triggerSuggest", {}), 50);
       }
     });
 
@@ -650,8 +944,8 @@ export default function Editor({ content: initial, onSave, onContentChange, file
     const obs = new MutationObserver(applyTheme);
     obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
     themeObsRef.current = obs;
-    editor.onDidDispose(() => obs.disconnect());
-  }, []); // empty deps — reads state via refs
+    actualEditor.onDidDispose(() => obs.disconnect());
+  }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
   const lspDot =
@@ -661,6 +955,28 @@ export default function Editor({ content: initial, onSave, onContentChange, file
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      {pendingDiff && hunks.length > 0 && (
+        <div className="flex items-center justify-between px-3 py-1.5 bg-amber-950/20 border-b border-amber-800/20 text-xs text-amber-200">
+          <div className="flex items-center gap-1.5">
+            <span>AI Edits Review ({hunks.filter(h => h.status === "pending").length} pending changes)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              className="bg-emerald-600 hover:bg-emerald-500 text-white px-2 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer"
+              onClick={handleAcceptAll}
+            >
+              Accept All
+            </button>
+            <button
+              className="bg-rose-600 hover:bg-rose-500 text-white px-2 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer"
+              onClick={handleDiscardAll}
+            >
+              Reject All
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="editor-toolbar" style={{ height: 36 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {filename && (
@@ -690,43 +1006,66 @@ export default function Editor({ content: initial, onSave, onContentChange, file
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
-        <EditorMono
-          height="100%"
-          language={language}
-          value={value}
-          onChange={handleChange}
-          onMount={handleEditorMount}
-          theme="oo-dark"
-          options={{
-            minimap:                    { enabled: false },
-            fontSize:                   16,  /* user-managed */
-            fontFamily:                 "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
-            fontLigatures:              true,
-            lineHeight:                 32,  /* 22 * 1.5 */
-            padding:                    { top: 24, bottom: 24 },
-            renderLineHighlight:        "gutter",
-            scrollBeyondLastLine:       false,
-            wordWrap:                   "on",
-            wrappingIndent:             "same",
-            smoothScrolling:            true,
-            cursorBlinking:             "smooth",
-            cursorSmoothCaretAnimation: "on",
-            tabSize:                    2,
-            renderWhitespace:           "none",
-            overviewRulerLanes:         1,
-            guides:                     { bracketPairs: true, indentation: true },
-            suggestOnTriggerCharacters: true,
-            quickSuggestions:           { other: true, comments: false, strings: false },
-            acceptSuggestionOnEnter:    "on",
-            snippetSuggestions:         "top",
-            suggest: {
-              showSnippets:    true,
-              filterGraceful:  false,   // strict prefix matching — no fuzzy
-              localityBonus:   true,
-              showWords:       false,   // no built-in word completion noise
-            },
-          }}
-        />
+        {pendingDiff ? (
+          <DiffEditor
+            height="100%"
+            language={language}
+            original={pendingDiff.original}
+            modified={value}
+            onMount={handleEditorMount}
+            theme="oo-dark"
+            options={{
+              minimap: { enabled: false },
+              fontSize: 16,
+              fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+              fontLigatures: true,
+              lineHeight: 32,
+              padding: { top: 24, bottom: 24 },
+              renderSideBySide: false,
+              smoothScrolling: true,
+              wordWrap: "on",
+              codeLens: true,
+            }}
+          />
+        ) : (
+          <EditorMono
+            height="100%"
+            language={language}
+            value={value}
+            onMount={handleEditorMount}
+            theme="oo-dark"
+            options={{
+              minimap:                    { enabled: false },
+              fontSize:                   16,
+              fontFamily:                 "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+              fontLigatures:              true,
+              lineHeight:                 32,
+              padding:                    { top: 24, bottom: 24 },
+              renderLineHighlight:        "gutter",
+              scrollBeyondLastLine:       false,
+              wordWrap:                   "on",
+              wrappingIndent:             "same",
+              smoothScrolling:            true,
+              cursorBlinking:             "smooth",
+              cursorSmoothCaretAnimation: "on",
+              tabSize:                    2,
+              renderWhitespace:           "none",
+              overviewRulerLanes:         1,
+              guides:                     { bracketPairs: true, indentation: true },
+              suggestOnTriggerCharacters: true,
+              quickSuggestions:           { other: true, comments: false, strings: false },
+              acceptSuggestionOnEnter:    "on",
+              snippetSuggestions:         "top",
+              codeLens:                   true,
+              suggest: {
+                showSnippets:    true,
+                filterGraceful:  false,
+                localityBonus:   true,
+                showWords:       false,
+              },
+            }}
+          />
+        )}
       </div>
     </div>
   );

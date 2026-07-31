@@ -684,8 +684,8 @@ export default function AppShell() {
   // Copilot drawer panel
   const [showCopilot,       setShowCopilot]       = useState(true);
   const [copilotHeight,     setCopilotHeight]     = useState(300);
-  // Bumped on version restore to force Editor remount with restored content
   const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
+  const [pendingDiff, setPendingDiff] = useState<{ original: string; modified: string; filePath: string } | null>(null);
 
   // Compiler settings — persisted to GitHub (.overleaf.json) per project
   // localStorage is used as an instant-boot cache to avoid SSR flicker.
@@ -697,10 +697,15 @@ export default function AppShell() {
   useEffect(() => {
     const r = Number(localStorage.getItem(RAIL_KEY));
     const p = Number(localStorage.getItem(PREVIEW_KEY));
-    const c = Number(localStorage.getItem(COPILOT_KEY));
+    const storedC = localStorage.getItem(COPILOT_KEY);
     if (r > 0) setRailWidth(r);
     if (p > 0) setPreviewWidth(p);
-    if (c > 0) setCopilotHeight(c);
+    if (storedC !== null) {
+      const c = Number(storedC);
+      if (c > 0) setCopilotHeight(c);
+    } else if (typeof window !== "undefined") {
+      setCopilotHeight(window.innerHeight / 2);
+    }
   }, []);
 
   useEffect(() => { localStorage.setItem(RAIL_KEY,    String(railWidth));    }, [railWidth]);
@@ -932,17 +937,17 @@ export default function AppShell() {
     setSelectedFile(null);
     setFileContent("");
     setSaveState("idle");
-    // Fire-and-forget: sync all project files to /tmp/oo-workspace for TexLab
+    setPendingDiff(null);
     fetch(`/api/projects/${encodeURIComponent(name)}/sync-workspace`, { method: "POST" }).catch(() => {});
   }, []);
 
   // ── File open ─────────────────────────────────────────────────────────────
   const handleSelectFile = useCallback(async (filePath: string) => {
     if (!project) return;
-    // Clear pending timers from previous file
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
     if (autoSaveTimer.current)    clearTimeout(autoSaveTimer.current);
 
+    setPendingDiff(null);
     setSelectedFile(filePath);
     setFileLoading(true);
     setFileContent("");
@@ -1000,7 +1005,41 @@ export default function AppShell() {
     }
   }, [project, selectedFile]);
 
-  // Keep save ref in sync so auto-save timer always calls the latest version
+  const handleAcceptDiffHunk = useCallback(async (committedContent: string, remainingModified: string) => {
+    if (!project || !selectedFile) return;
+    await handleSaveFile(committedContent);
+    setPendingDiff({
+      original: committedContent,
+      modified: remainingModified,
+      filePath: selectedFile,
+    });
+    currentContent.current = remainingModified;
+    scheduleAutoCompile();
+  }, [project, selectedFile, handleSaveFile, scheduleAutoCompile]);
+
+  const handleRejectDiffHunk = useCallback((newEditorText: string) => {
+    if (!selectedFile) return;
+    setPendingDiff({
+      original: fileContent,
+      modified: newEditorText,
+      filePath: selectedFile,
+    });
+    currentContent.current = newEditorText;
+    scheduleAutoCompile();
+  }, [selectedFile, fileContent, scheduleAutoCompile]);
+
+  const handleAcceptAllDiffs = useCallback(async (acceptedContent: string) => {
+    if (!project || !selectedFile) return;
+    await handleSaveFile(acceptedContent);
+    setPendingDiff(null);
+  }, [project, selectedFile, handleSaveFile]);
+
+  const handleDiscardAllDiffs = useCallback(() => {
+    setPendingDiff(null);
+    currentContent.current = fileContent;
+    scheduleAutoCompile();
+  }, [fileContent, scheduleAutoCompile]);
+
   useEffect(() => { saveFileRef.current = handleSaveFile; }, [handleSaveFile]);
 
   // ── Version restore ─────────────────────────────────────────────────────
@@ -1134,8 +1173,13 @@ export default function AppShell() {
                     projectFiles={selectedFile ? [selectedFile] : ["main.tex"]}
                     getFileContent={(fp) => fp === selectedFile ? fileContent : ""}
                     onApplyCode={(codeSnippet) => {
-                      setFileContent(codeSnippet);
-                      handleSaveFile(codeSnippet);
+                      setPendingDiff({
+                        original: fileContent,
+                        modified: codeSnippet,
+                        filePath: selectedFile || "main.tex",
+                      });
+                      currentContent.current = codeSnippet;
+                      scheduleAutoCompile();
                     }}
                     projectName={project || undefined}
                   />
@@ -1166,6 +1210,11 @@ export default function AppShell() {
               filename={filename}
               project={project ?? undefined}
               filePath={selectedFile ?? undefined}
+              pendingDiff={pendingDiff}
+              onAcceptDiffHunk={handleAcceptDiffHunk}
+              onRejectDiffHunk={handleRejectDiffHunk}
+              onAcceptAllDiffs={handleAcceptAllDiffs}
+              onDiscardAllDiffs={handleDiscardAllDiffs}
             />
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>

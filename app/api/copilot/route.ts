@@ -301,7 +301,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     compiledContextPrompt += `GUIDELINES:\n`;
     compiledContextPrompt += `1. Respond directly without calling tools if the user is greeting you, saying hello, asking a general question, or the request does not require filesystem/compilation actions.\n`;
     compiledContextPrompt += `2. Only call tools if they are strictly necessary to perform or answer the user request.\n`;
-    compiledContextPrompt += `3. ALWAYS explain your thinking process and reasoning in a text part before selecting or calling any tool. State what you are planning to do, which tool you are choosing, and why.\n\n`;
+    compiledContextPrompt += `3. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.\n`;
+    compiledContextPrompt += `4. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.\n\n`;
 
     if (selectedTextSnippet) {
       compiledContextPrompt += `User Highlighted Selection:\n\`\`\`latex\n${selectedTextSnippet}\n\`\`\`\n`;
@@ -337,7 +338,8 @@ CRITICAL GUIDELINES:
 7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
 8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.
 9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' to attempt to fix the error.
-10. ALWAYS explain your thinking process and reasoning in a text part before selecting or calling any tool. State what you are planning to do, which tool you are choosing, and why.`
+10. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
+11. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.`
         }
       ]
     };
@@ -379,6 +381,11 @@ CRITICAL GUIDELINES:
                   },
                 ],
                 systemInstruction,
+                ...(isGreeting ? {
+                  generationConfig: {
+                    responseMimeType: "application/json"
+                  }
+                } : {})
               },
               geminiApiKeyString
             );
@@ -485,14 +492,41 @@ CRITICAL GUIDELINES:
                 parsedJsonResponse = JSON.parse(rawCandidateText);
                 console.log("Parsed JSON response successfully");
               } catch {
-                console.warn("Failed to parse response as JSON, falling back to plaintext");
-                parsedJsonResponse = {
-                  message: "Generated update:",
-                  actionType: "modify_file",
-                  targetPath: activeFilePath,
-                  actionDescription: "Apply AI code modification",
-                  replacementCode: rawCandidateText,
-                };
+                let parsedInnerJson = false;
+                const startIdx = rawCandidateText.indexOf("{");
+                const endIdx = rawCandidateText.lastIndexOf("}");
+                if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                  try {
+                    const innerJsonStr = rawCandidateText.slice(startIdx, endIdx + 1);
+                    parsedJsonResponse = JSON.parse(innerJsonStr);
+                    parsedInnerJson = true;
+                    console.log("Extracted and parsed inner JSON block successfully");
+                  } catch {
+                    console.warn("Failed to parse extracted inner JSON block");
+                  }
+                }
+
+                if (!parsedInnerJson) {
+                  console.warn("Failed to parse response as JSON, falling back to plaintext");
+                  const containsLatex = rawCandidateText.includes("\\") || rawCandidateText.includes("{") || rawCandidateText.includes("}");
+                  if (containsLatex) {
+                    parsedJsonResponse = {
+                      message: "Generated update:",
+                      actionType: "modify_file",
+                      targetPath: activeFilePath,
+                      actionDescription: "Apply AI code modification",
+                      replacementCode: rawCandidateText,
+                    };
+                  } else {
+                    parsedJsonResponse = {
+                      message: rawCandidateText,
+                      actionType: "none",
+                      targetPath: activeFilePath,
+                      actionDescription: "",
+                      replacementCode: "",
+                    };
+                  }
+                }
               }
 
               finalResponseData = parsedJsonResponse;
