@@ -62,6 +62,24 @@ export default function CopilotDrawer({
   const chatBottomRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+
+  useEffect(() => {
+    const key = `copilot_history_${projectName || "default"}`;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      try {
+        setMessagesList(JSON.parse(saved));
+      } catch (err) {}
+    }
+    setHistoryLoaded(true);
+  }, [projectName]);
+
+  useEffect(() => {
+    if (!historyLoaded) return;
+    const key = `copilot_history_${projectName || "default"}`;
+    localStorage.setItem(key, JSON.stringify(messagesList));
+  }, [messagesList, projectName, historyLoaded]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -329,6 +347,18 @@ export default function CopilotDrawer({
     );
   };
 
+  const handleClearHistory = () => {
+    const key = `copilot_history_${projectName || "default"}`;
+    localStorage.removeItem(key);
+    setMessagesList([
+      {
+        id: "welcome-1",
+        sender: "copilot",
+        text: "Hello! I am your Open-Overleaf Copilot powered by gemini-3.5-flash-lite. Type a request or reference files using @filename to refine your LaTeX document.",
+      },
+    ]);
+  };
+
   const insertAtMention = (fileName: string) => {
     setPromptInputText((previousText) => `${previousText} @${fileName} `);
   };
@@ -352,6 +382,13 @@ export default function CopilotDrawer({
               <span className="text-cyan-300 font-bold">Fix with AI</span>
             </button>
           )}
+          <button
+            onClick={handleClearHistory}
+            className="text-zinc-400 hover:text-zinc-100 text-[10px] px-1.5 py-0.5 rounded hover:bg-zinc-800 border border-zinc-700/50"
+            title="Clear Chat History"
+          >
+            Clear
+          </button>
           <button
             onClick={onClose}
             className="text-zinc-400 hover:text-zinc-100 text-xs px-1.5 py-0.5 rounded hover:bg-zinc-800"
