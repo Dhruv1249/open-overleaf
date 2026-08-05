@@ -202,6 +202,21 @@ export default function CopilotDrawer({
                   toolStatus: "running",
                 },
               ]);
+            } else if (chunk.type === "tool_approval_required") {
+              setMessagesList((prev) => [
+                ...prev,
+                {
+                  id: chunk.id,
+                  sender: "copilot",
+                  text: `Tool '${chunk.name}' requires your approval to run.`,
+                  isToolCall: true,
+                  toolStatus: "running",
+                  approvalStatus: "pending",
+                  actionType: "delete_file",
+                  targetPath: chunk.name,
+                  actionDescription: `Arguments: ${JSON.stringify(chunk.arguments)}`,
+                },
+              ]);
             } else if (chunk.type === "tool_result") {
               setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
               setMessagesList((prev) =>
@@ -272,14 +287,28 @@ export default function CopilotDrawer({
     }
   };
 
+  const submitApproval = async (callId: string, action: "approve" | "reject") => {
+    try {
+      await fetch("/api/copilot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, callId }),
+      });
+    } catch (err) {}
+  };
+
   const handleApproveAction = (messageId: string) => {
+    submitApproval(messageId, "approve");
     setMessagesList((previousList) =>
       previousList.map((item) => {
         if (item.id === messageId) {
           if (item.actionType === "modify_file" && item.replacementCode) {
             onApplyCode(item.replacementCode, Boolean(selectedText));
           } else if (item.actionType === "delete_file" && item.targetPath && onDeleteFile) {
-            onDeleteFile(item.targetPath);
+            const mcpTools = ["rename_file", "update_project_settings", "sync_to_drive"];
+            if (!mcpTools.includes(item.targetPath)) {
+              onDeleteFile(item.targetPath);
+            }
           }
           return { ...item, approvalStatus: "approved" };
         }
@@ -289,6 +318,7 @@ export default function CopilotDrawer({
   };
 
   const handleRejectAction = (messageId: string) => {
+    submitApproval(messageId, "reject");
     setMessagesList((previousList) =>
       previousList.map((item) => {
         if (item.id === messageId) {

@@ -25,6 +25,8 @@ export interface CopilotResponsePayload {
   error?: string;
 }
 
+const pendingApprovals = new Map<string, "pending" | "approved" | "rejected">();
+
 const functionDeclarations = [
   {
     name: "list_projects",
@@ -109,6 +111,49 @@ const functionDeclarations = [
         filePath: { type: "STRING", description: "Relative file path inside project" }
       },
       required: ["projectName", "filePath"]
+    }
+  },
+  {
+    name: "rename_file",
+    description: "Renames or moves a file inside the LaTeX project. Requires user approval.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        fromPath: { type: "STRING", description: "Old relative file path" },
+        toPath: { type: "STRING", description: "New relative file path" }
+      },
+      required: ["projectName", "fromPath", "toPath"]
+    }
+  },
+  {
+    name: "update_project_settings",
+    description: "Updates project settings like compilation engine or main entry file. Requires user approval.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        settings: {
+          type: "OBJECT",
+          properties: {
+            engine: { type: "STRING", description: "xelatex, pdflatex, or lualatex" },
+            mainFile: { type: "STRING", description: "Main entry file name" }
+          }
+        }
+      },
+      required: ["projectName", "settings"]
+    }
+  },
+  {
+    name: "sync_to_drive",
+    description: "Synchronizes the compiled project PDF to Google Drive. Requires user approval.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        mainFile: { type: "STRING", description: "The main .tex file name, defaults to main.tex" }
+      },
+      required: ["projectName"]
     }
   }
 ];
@@ -238,7 +283,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const session = verifySessionFromRequest(request);
     const userAccessToken = session?.access_token as string | undefined;
 
-    const payload: CopilotRequestPayload = await request.json();
+    const payload: any = await request.json();
+    if (payload.action === "approve" || payload.action === "reject") {
+      const { callId, action } = payload;
+      pendingApprovals.set(callId, action === "approve" ? "approved" : "rejected");
+      return NextResponse.json({ success: true });
+    }
+
     const userPromptText = payload.prompt || "";
     const activeFilePath = payload.activeFilePath || "main.tex";
     const selectedTextSnippet = payload.selectedText || "";
@@ -440,6 +491,35 @@ CRITICAL GUIDELINES:
                       ...toolArgs,
                       githubToken: userAccessToken || toolArgs?.githubToken,
                     };
+
+                    const approvalRequiredTools = ["rename_file", "update_project_settings", "sync_to_drive"];
+                    const requiresApproval = approvalRequiredTools.includes(toolName);
+
+                    if (requiresApproval) {
+                      sendChunk({ type: "tool_approval_required", id: callId, name: toolName, arguments: toolArgs });
+                      pendingApprovals.set(callId, "pending");
+
+                      const startTime = Date.now();
+                      let approved = false;
+                      while (Date.now() - startTime < 60000) {
+                        await new Promise((resolve) => setTimeout(resolve, 500));
+                        const status = pendingApprovals.get(callId);
+                        if (status === "approved") {
+                          approved = true;
+                          break;
+                        }
+                        if (status === "rejected") {
+                          break;
+                        }
+                      }
+
+                      pendingApprovals.delete(callId);
+
+                      if (!approved) {
+                        throw new Error(`Tool execution for '${toolName}' was rejected by the user or timed out.`);
+                      }
+                    }
+
                     console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
                     toolResult = await callLocalMCPTool(toolName, finalArgs);
                     console.log("Tool execution succeeded:", toolName);

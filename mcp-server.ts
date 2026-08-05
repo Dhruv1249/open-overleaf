@@ -454,30 +454,7 @@ async function executeMCPTool(name: string, toolArguments: Record<string, any>):
     };
   }
 
-  if (name === "create_project") {
-    const projectName = String(toolArguments?.projectName);
-    const description = String(toolArguments?.description || "");
-    if (!userGhToken) throw new Error("create_project requires a githubToken");
-    const result = await syncWithWebUIAPI(
-      "POST",
-      "/api/projects",
-      { name: projectName, description },
-      userGhToken
-    );
-    return { ok: result.ok, name: result.name };
-  }
 
-  if (name === "delete_project") {
-    const projectName = String(toolArguments?.projectName);
-    if (!userGhToken) throw new Error("delete_project requires a githubToken");
-    await syncWithWebUIAPI(
-      "DELETE",
-      `/api/projects?name=${encodeURIComponent(projectName)}`,
-      undefined,
-      userGhToken
-    );
-    return { message: `Project ${projectName} permanently deleted from GitHub` };
-  }
 
   if (name === "rename_file") {
     const projectName = String(toolArguments?.projectName);
@@ -780,20 +757,7 @@ function createMCPServer(): Server {
             required: ["projectName", "filePath"],
           },
         },
-        {
-          name: "write_project_file",
-          description: "Writes or updates a file in an open-overleaf project and commits it to GitHub. Requires a githubToken.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              projectName: { type: "string", description: "Name of the LaTeX project" },
-              filePath: { type: "string", description: "Relative file path inside project" },
-              content: { type: "string", description: "Updated file content" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
-            },
-            required: ["projectName", "filePath", "content", "githubToken"],
-          },
-        },
+
         {
           name: "delete_file",
           description: "Deletes a specific file or folder inside a target project on GitHub.",
@@ -861,31 +825,7 @@ function createMCPServer(): Server {
             required: ["projectName"],
           },
         },
-        {
-          name: "create_project",
-          description: "Creates a new project folder on GitHub with a default gitkeep and settings manifest. Requires a githubToken.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              projectName: { type: "string", description: "Name of the project directory to create" },
-              description: { type: "string", description: "Optional project description" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
-            },
-            required: ["projectName", "githubToken"],
-          },
-        },
-        {
-          name: "delete_project",
-          description: "Irreversibly deletes an entire project directory and all its files from GitHub. Requires a githubToken.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              projectName: { type: "string", description: "Name of the project directory to delete" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
-            },
-            required: ["projectName", "githubToken"],
-          },
-        },
+
         {
           name: "rename_file",
           description: "Renames/moves a file or directory in GitHub via copy-then-delete. Requires a githubToken.",
@@ -1005,7 +945,7 @@ function createMCPServer(): Server {
         },
         {
           name: "apply_patch",
-          description: "Applies targeted chunk-based replacements to a file on GitHub without transferring the whole file.",
+          description: "Applies targeted chunk-based replacements to a file on GitHub without transferring the whole file. Use this instead of overwriting to edit files safely.",
           inputSchema: {
             type: "object",
             properties: {
