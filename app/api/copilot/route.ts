@@ -61,19 +61,7 @@ const functionDeclarations = [
       required: ["projectName", "filePath"]
     }
   },
-  {
-    name: "write_project_file",
-    description: "Creates or overwrites a file with text content in the LaTeX project. Requires user approval.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        projectName: { type: "STRING", description: "Name of the LaTeX project" },
-        filePath: { type: "STRING", description: "Relative file path inside project, e.g., main.tex" },
-        content: { type: "STRING", description: "Text content of the file" }
-      },
-      required: ["projectName", "filePath", "content"]
-    }
-  },
+
   {
     name: "delete_file",
     description: "Deletes a specific file or folder inside a target project on GitHub. Requires user approval.",
@@ -305,6 +293,51 @@ function isSimpleGreeting(prompt: string): boolean {
   return greetings.includes(clean);
 }
 
+function parseLaxJson(str: string): any {
+  try {
+    return JSON.parse(str);
+  } catch (e) {}
+
+  let fixed = "";
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (escape) {
+      const validEscapes = ['"', '\\', '/', 'b', 'f', 'n', 'r', 't'];
+      const isHex = (c: string) => /[0-9a-fA-F]/.test(c);
+
+      let isUnicode = false;
+      if (char === 'u' && i + 4 < str.length) {
+        if (isHex(str[i+1]) && isHex(str[i+2]) && isHex(str[i+3]) && isHex(str[i+4])) {
+          isUnicode = true;
+        }
+      }
+
+      if (inString && !validEscapes.includes(char) && !isUnicode) {
+        fixed += "\\\\" + char;
+      } else {
+        fixed += "\\" + char;
+      }
+      escape = false;
+    } else if (char === '\\') {
+      escape = true;
+    } else {
+      if (char === '"') {
+        inString = !inString;
+      }
+      fixed += char;
+    }
+  }
+
+  if (escape) {
+    fixed += "\\";
+  }
+
+  return JSON.parse(fixed);
+}
+
 const modelsCascade = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -469,8 +502,8 @@ CRITICAL GUIDELINES:
 6. To inspect the contents, read the text, or see code inside any file (like a .tex, .json, or .bib file), you MUST call the 'read_project_file' or 'read_file_lines' tool. Do NOT use 'compile_project' or other tools to read/inspect files.
 7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
 8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.
-9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' or 'apply_patch' to attempt to fix the error.
-10. Use 'apply_patch' when you need to make targeted line-level modifications to a file. It is much faster and more token-efficient than overwriting the entire file using 'write_project_file'.
+9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'apply_patch' to attempt to fix the error.
+10. Use 'apply_patch' when you need to make targeted line-level modifications to a file. Do NOT try to overwrite files; always use surgical patches.
 11. Use 'get_file_history' and 'get_file_at_revision' to inspect past commits/versions of a file when the user asks to see history, revert a change, or when you need to understand how a recent update broke the compilation.
 12. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
 13. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.`
@@ -515,7 +548,9 @@ CRITICAL GUIDELINES:
     const stream = new ReadableStream({
       async start(controller) {
         const sendChunk = (data: any) => {
-          controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + "\n"));
+          try {
+            controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + "\n"));
+          } catch (e) {}
         };
 
         try {
@@ -598,7 +633,7 @@ CRITICAL GUIDELINES:
                       githubToken: userAccessToken || toolArgs?.githubToken,
                     };
 
-                    const approvalRequiredTools = ["write_project_file", "delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
+                    const approvalRequiredTools = ["delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
                     const requiresApproval = approvalRequiredTools.includes(toolName);
 
                     if (requiresApproval) {
@@ -675,16 +710,16 @@ CRITICAL GUIDELINES:
               };
 
               try {
-                parsedJsonResponse = JSON.parse(rawCandidateText);
+                parsedJsonResponse = parseLaxJson(rawCandidateText);
                 console.log("[Copilot API] Parsed JSON response successfully:", JSON.stringify(parsedJsonResponse));
-              } catch {
+              } catch (err) {
                 let parsedInnerJson = false;
                 const startIdx = rawCandidateText.indexOf("{");
                 const endIdx = rawCandidateText.lastIndexOf("}");
                 if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
                   try {
                     const innerJsonStr = rawCandidateText.slice(startIdx, endIdx + 1);
-                    parsedJsonResponse = JSON.parse(innerJsonStr);
+                    parsedJsonResponse = parseLaxJson(innerJsonStr);
                     parsedInnerJson = true;
                     console.log("[Copilot API] Extracted and parsed inner JSON block successfully:", JSON.stringify(parsedJsonResponse));
                   } catch {
@@ -693,6 +728,12 @@ CRITICAL GUIDELINES:
                 }
 
                 if (!parsedInnerJson) {
+                  const isJsonLike = rawCandidateText.trim().startsWith("{") && rawCandidateText.includes("replacementCode");
+                  if (isJsonLike) {
+                    console.error("[Copilot API] JSON-like response failed parsing even with lax mode:", err);
+                    throw new Error("Received malformed JSON response from AI model. Please try again.");
+                  }
+
                   console.warn("[Copilot API] Failed to parse response as JSON, falling back to plaintext");
                   const containsLatex = rawCandidateText.includes("\\") || rawCandidateText.includes("{") || rawCandidateText.includes("}");
                   if (containsLatex) {

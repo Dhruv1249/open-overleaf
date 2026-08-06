@@ -301,42 +301,6 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     };
   }
 
-  if (name === "write_project_file") {
-    const projectName = String(toolArguments?.projectName);
-    const filePath = String(toolArguments?.filePath);
-    const fileContentString = String(toolArguments?.content);
-    if (!userGhToken) {
-      throw new Error("write_project_file requires a githubToken argument — provide a fine-grained PAT with Contents read+write on the target repo");
-    }
-    const targetFullPath = resolveSafePath(projectName, filePath);
-
-    // 1. Write locally for instant TeX compilation
-    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
-    fs.writeFileSync(targetFullPath, fileContentString, "utf-8");
-
-    // 2. If user provided a githubToken, await GitHub API sync synchronously
-    let ghSyncMessage = "";
-    if (userGhToken) {
-      // Ensure project exists on GitHub (ignore 409 conflict if already exists)
-      try {
-        await syncWithWebUIAPI("POST", "/api/projects", { name: projectName }, userGhToken);
-      } catch (projErr: any) {
-        if (!projErr.message.includes("already exists")) {
-          throw projErr;
-        }
-      }
-
-      await syncWithWebUIAPI("PUT", `/api/projects/${encodeURIComponent(projectName)}/file`, {
-        path: filePath,
-        content: fileContentString,
-        message: `MCP: write ${filePath}`,
-      }, userGhToken);
-      ghSyncMessage = " and committed to GitHub";
-    }
-
-    return { message: `Successfully wrote ${filePath} in project ${projectName}${ghSyncMessage}` };
-  }
-
   if (name === "delete_file") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
@@ -661,22 +625,60 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 
     for (const patch of sortedPatches) {
       const { startLine, endLine, originalContent, newContent } = patch;
-      if (startLine < 1 || endLine > lines.length || startLine > endLine) {
-        throw new Error(`Invalid line range: [${startLine}, ${endLine}]. File has ${lines.length} lines.`);
+      let actualStartLine = startLine;
+      let actualEndLine = endLine;
+      let matched = false;
+
+      if (startLine >= 1 && endLine <= lines.length && startLine <= endLine) {
+        const actualBlock = lines.slice(startLine - 1, endLine).join("\n");
+        if (actualBlock.trim() === originalContent.trim()) {
+          matched = true;
+        }
       }
 
-      // Check content match in lines [startLine - 1, endLine]
-      const actualBlock = lines.slice(startLine - 1, endLine).join("\n");
-      if (actualBlock.trim() !== originalContent.trim()) {
+      if (!matched) {
+        for (let offset = -5; offset <= 5; offset++) {
+          if (offset === 0) continue;
+          const s = startLine + offset;
+          const e = endLine + offset;
+          if (s >= 1 && e <= lines.length && s <= e) {
+            const actualBlock = lines.slice(s - 1, e).join("\n");
+            if (actualBlock.trim() === originalContent.trim()) {
+              actualStartLine = s;
+              actualEndLine = e;
+              matched = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!matched) {
+        const normalizedOriginal = originalContent.trim().replace(/\r\n/g, "\n");
+        const joinedFile = lines.join("\n");
+        const index = joinedFile.indexOf(normalizedOriginal);
+        if (index !== -1) {
+          const beforeMatch = joinedFile.substring(0, index);
+          const matchedStartLine = beforeMatch.split("\n").length;
+          const originalLinesCount = normalizedOriginal.split("\n").length;
+          const matchedEndLine = matchedStartLine + originalLinesCount - 1;
+          
+          actualStartLine = matchedStartLine;
+          actualEndLine = matchedEndLine;
+          matched = true;
+        }
+      }
+
+      if (!matched) {
+        const actualBlock = lines.slice(startLine - 1, Math.min(endLine, lines.length)).join("\n");
         throw new Error(
           `Validation failed for line range [${startLine}, ${endLine}]. ` +
           `Expected:\n"${originalContent}"\nBut found:\n"${actualBlock}"`
         );
       }
 
-      // Perform replacement
       const replacementLines = newContent.split("\n");
-      lines.splice(startLine - 1, endLine - startLine + 1, ...replacementLines);
+      lines.splice(actualStartLine - 1, actualEndLine - actualStartLine + 1, ...replacementLines);
     }
 
     const updatedContent = lines.join("\n");

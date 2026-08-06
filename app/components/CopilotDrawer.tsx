@@ -240,7 +240,7 @@ export default function CopilotDrawer({
               ]);
             } else if (chunk.type === "tool_result") {
               setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
-              if (chunk.success && onRefreshTree && ["write_project_file", "delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
+              if (chunk.success && onRefreshTree && ["delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
                 onRefreshTree();
               }
               setMessagesList((prev) =>
@@ -329,7 +329,7 @@ export default function CopilotDrawer({
           if (item.actionType === "modify_file" && item.replacementCode) {
             onApplyCode(item.replacementCode, Boolean(selectedText), item.targetPath || activeFilePath);
           } else if (item.actionType === "delete_file" && item.targetPath && onDeleteFile) {
-            const mcpTools = ["write_project_file", "delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
+            const mcpTools = ["delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
             if (!mcpTools.includes(item.targetPath)) {
               onDeleteFile(item.targetPath);
             }

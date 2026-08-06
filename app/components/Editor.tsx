@@ -876,11 +876,11 @@ export default function Editor({
       domNode.appendChild(rejectBtn);
 
       const widget = {
-        getId: () => `hunk-widget-${hunk.id}-${Date.now()}`,
+        getId: () => `hunk-widget-${hunk.id}`,
         getDomNode: () => domNode,
         getPosition: () => ({
           position: { lineNumber: Math.max(1, Math.min(hunk.line, model.getLineCount())), column: 1 },
-          preference: [monaco.editor.ContentWidgetPositionPreference.ABOVE]
+          preference: [1]
         })
       };
 
