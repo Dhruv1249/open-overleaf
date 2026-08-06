@@ -166,6 +166,7 @@ export default function CopilotDrawer({
           errorCount: errorCount,
           warningCount: warningCount,
           projectName: projectName,
+          history: messagesList,
         }),
         signal: controller.signal,
       });

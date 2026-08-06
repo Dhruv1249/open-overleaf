@@ -13,6 +13,7 @@ export interface CopilotRequestPayload {
   warningCount?: number;
   apiKey?: string;
   projectName?: string;
+  history?: any[];
 }
 
 export interface CopilotResponsePayload {
@@ -395,16 +396,39 @@ CRITICAL GUIDELINES:
       ]
     };
 
-    const conversationHistory: any[] = [
-      {
+    const history = payload.history || [];
+    const cleanHistory = history.filter((msg: any) => {
+      if (msg.sender === "user") return true;
+      if (msg.sender === "copilot" && !msg.isThought && !msg.isToolCall && !msg.isError) return true;
+      return false;
+    });
+
+    const historyTurns: any[] = [];
+    for (const msg of cleanHistory) {
+      const role = msg.sender === "user" ? "user" : "model";
+      if (historyTurns.length === 0) {
+        if (role === "user") {
+          historyTurns.push({ role, parts: [{ text: msg.text }] });
+        }
+      } else {
+        const lastTurn = historyTurns[historyTurns.length - 1];
+        if (lastTurn.role === role) {
+          lastTurn.parts[0].text += "\n" + msg.text;
+        } else {
+          historyTurns.push({ role, parts: [{ text: msg.text }] });
+        }
+      }
+    }
+
+    const conversationHistory: any[] = [...historyTurns];
+    if (conversationHistory.length > 0 && conversationHistory[conversationHistory.length - 1].role === "user") {
+      conversationHistory[conversationHistory.length - 1].parts[0].text += "\n\n[Current Context & Update Request]:\n" + compiledContextPrompt;
+    } else {
+      conversationHistory.push({
         role: "user",
-        parts: [
-          {
-            text: compiledContextPrompt,
-          },
-        ],
-      },
-    ];
+        parts: [{ text: compiledContextPrompt }]
+      });
+    }
 
     const stream = new ReadableStream({
       async start(controller) {
