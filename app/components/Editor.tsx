@@ -6,6 +6,9 @@ import { diffLines } from "diff";
 import { LATEX_COMMANDS, ENVIRONMENTS, PACKAGES, DOCUMENT_CLASSES, type LatexCompletion } from "../lib/latex-completions";
 import { parseDocumentCommands, buildInsertText, type ParsedCommand } from "../lib/latex-doc-parser";
 
+const ACCEPT_COMMAND_ID = "open-overleaf.acceptHunk";
+const REJECT_COMMAND_ID = "open-overleaf.rejectHunk";
+
 // ── Language detection ────────────────────────────────────────────────────────
 function getLanguage(filename?: string): string {
   if (!filename) return "latex";
@@ -652,12 +655,14 @@ export default function Editor({
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lspStatus, setLspStatus] = useState<"connecting" | "connected" | "offline">("offline");
+  const [editorInstance, setEditorInstance] = useState<any>(null);
 
   const editorRef  = useRef<any>(null);
   const monacoRef  = useRef<any>(null);
   const lspRef     = useRef<LspClient | null>(null);
   const docVersion = useRef(0);
   const themeObsRef = useRef<MutationObserver | null>(null);
+  const activeWidgetsRef = useRef<any[]>([]);
 
   const initialRef = useRef(initial);
   const pendingDiffRef = useRef(pendingDiff);
@@ -798,6 +803,100 @@ export default function Editor({
     onRejectDiffHunk(newEditorText);
   }, [pendingDiff, onRejectDiffHunk]);
 
+  useEffect(() => {
+    const monaco = monacoRef.current;
+    const editor = editorInstance;
+    if (!monaco || !editor || !pendingDiff) return;
+
+    const model = editor.getModel();
+    if (!model) return;
+
+    activeWidgetsRef.current.forEach((w) => {
+      editor.removeContentWidget(w);
+    });
+    activeWidgetsRef.current = [];
+
+    const newWidgets: any[] = [];
+    hunks.forEach((hunk) => {
+      if (hunk.status !== "pending") return;
+
+      const domNode = document.createElement("div");
+      domNode.className = "oo-diff-widget";
+      domNode.style.display = "flex";
+      domNode.style.alignItems = "center";
+      domNode.style.gap = "6px";
+      domNode.style.background = "var(--ink-float, #1c1917)";
+      domNode.style.border = "1px solid var(--rule-emphasis, #44403c)";
+      domNode.style.borderRadius = "4px";
+      domNode.style.padding = "3px 8px";
+      domNode.style.boxShadow = "0 4px 12px rgba(0,0,0,0.5)";
+      domNode.style.zIndex = "100";
+      domNode.style.fontFamily = "var(--font-ui, sans-serif)";
+      domNode.style.fontSize = "11px";
+      domNode.style.pointerEvents = "auto";
+
+      const acceptBtn = document.createElement("button");
+      acceptBtn.innerText = "Accept";
+      acceptBtn.style.background = "#10b981";
+      acceptBtn.style.color = "#ffffff";
+      acceptBtn.style.border = "none";
+      acceptBtn.style.borderRadius = "3px";
+      acceptBtn.style.padding = "2px 8px";
+      acceptBtn.style.cursor = "pointer";
+      acceptBtn.style.fontSize = "10px";
+      acceptBtn.style.fontWeight = "bold";
+      acceptBtn.style.transition = "background 0.15s ease";
+      acceptBtn.onmouseenter = () => { acceptBtn.style.background = "#059669"; };
+      acceptBtn.onmouseleave = () => { acceptBtn.style.background = "#10b981"; };
+      acceptBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleAcceptHunk(hunk.id);
+      };
+      domNode.appendChild(acceptBtn);
+
+      const rejectBtn = document.createElement("button");
+      rejectBtn.innerText = "Reject";
+      rejectBtn.style.background = "#ef4444";
+      rejectBtn.style.color = "#ffffff";
+      rejectBtn.style.border = "none";
+      rejectBtn.style.borderRadius = "3px";
+      rejectBtn.style.padding = "2px 8px";
+      rejectBtn.style.cursor = "pointer";
+      rejectBtn.style.fontSize = "10px";
+      rejectBtn.style.fontWeight = "bold";
+      rejectBtn.style.transition = "background 0.15s ease";
+      rejectBtn.onmouseenter = () => { rejectBtn.style.background = "#dc2626"; };
+      rejectBtn.onmouseleave = () => { rejectBtn.style.background = "#ef4444"; };
+      rejectBtn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        handleRejectHunk(hunk.id);
+      };
+      domNode.appendChild(rejectBtn);
+
+      const widget = {
+        getId: () => `hunk-widget-${hunk.id}-${Date.now()}`,
+        getDomNode: () => domNode,
+        getPosition: () => ({
+          position: { lineNumber: Math.max(1, Math.min(hunk.line, model.getLineCount())), column: 1 },
+          preference: [monaco.editor.ContentWidgetPositionPreference.ABOVE]
+        })
+      };
+
+      editor.addContentWidget(widget);
+      newWidgets.push(widget);
+    });
+
+    activeWidgetsRef.current = newWidgets;
+
+    return () => {
+      newWidgets.forEach((w) => {
+        editor.removeContentWidget(w);
+      });
+    };
+  }, [editorInstance, pendingDiff, hunks, handleAcceptHunk, handleRejectHunk]);
+
   const handleAcceptAll = useCallback(() => {
     if (onAcceptAllDiffs && editorRef.current) {
       onAcceptAllDiffs(editorRef.current.getValue());
@@ -839,6 +938,7 @@ export default function Editor({
     const isDiff = !!editor.getModifiedEditor;
     const actualEditor = isDiff ? editor.getModifiedEditor() : editor;
     editorRef.current = actualEditor;
+    setEditorInstance(actualEditor);
 
     actualEditor.updateOptions({
       codeLens: true
@@ -859,65 +959,15 @@ export default function Editor({
       () => lspRef.current,
     );
 
-    const acceptCommandId = "open-overleaf.acceptHunk";
-    const rejectCommandId = "open-overleaf.rejectHunk";
-
     if (typeof window !== "undefined" && !(window as any).__ooCommandsRegistered) {
       (window as any).__ooCommandsRegistered = true;
-      monaco.editor.registerCommand(acceptCommandId, (accessor: any, hunkId: string) => {
+      monaco.editor.registerCommand(ACCEPT_COMMAND_ID, (accessor: any, hunkId: string) => {
         (window as any).__ooActiveAcceptHunk?.(hunkId);
       });
-      monaco.editor.registerCommand(rejectCommandId, (accessor: any, hunkId: string) => {
+      monaco.editor.registerCommand(REJECT_COMMAND_ID, (accessor: any, hunkId: string) => {
         (window as any).__ooActiveRejectHunk?.(hunkId);
       });
     }
-
-    const createCodeLensProvider = (langId: string) => {
-      return monaco.languages.registerCodeLensProvider(langId, {
-        provideCodeLenses: (model: any) => {
-          if (model.uri.toString() !== actualEditor.getModel()?.uri.toString()) return { lenses: [], dispose: () => {} };
-          const currentHunks = hunksRef.current;
-          const lenses: any[] = [];
-          currentHunks.forEach(hunk => {
-            if (hunk.status !== "pending") return;
-            const line = Math.max(1, Math.min(hunk.line, model.getLineCount()));
-            lenses.push({
-              range: {
-                startLineNumber: line,
-                startColumn: 1,
-                endLineNumber: line,
-                endColumn: 1
-              },
-              id: `accept-${hunk.id}`,
-              command: {
-                id: acceptCommandId,
-                title: "Accept",
-                arguments: [hunk.id]
-              }
-            });
-            lenses.push({
-              range: {
-                startLineNumber: line,
-                startColumn: 1,
-                endLineNumber: line,
-                endColumn: 1
-              },
-              id: `reject-${hunk.id}`,
-              command: {
-                id: rejectCommandId,
-                title: "Reject",
-                arguments: [hunk.id]
-              }
-            });
-          });
-          return { lenses, dispose: () => {} };
-        },
-        resolveCodeLens: (model: any, codeLens: any) => codeLens
-      });
-    };
-
-    const provider1 = createCodeLensProvider("latex");
-    const provider2 = createCodeLensProvider("plaintext");
 
     actualEditor.onDidChangeModelContent((e: any) => {
       const newVal = actualEditor.getValue();

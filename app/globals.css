@@ -1245,3 +1245,7 @@ body {
 .mobile-nav-btn:not(.active):hover {
   color: var(--quill-secondary);
 }
+
+.monaco-diff-editor .codelens-decoration {
+  display: block !important;
+}

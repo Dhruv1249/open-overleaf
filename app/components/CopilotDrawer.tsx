@@ -28,9 +28,10 @@ export interface CopilotDrawerProps {
   warningCount?: number;
   projectFiles: string[];
   getFileContent: (filePath: string) => string;
-  onApplyCode: (replacementCode: string, isSelection: boolean) => void;
+  onApplyCode: (replacementCode: string, isSelection: boolean, targetPath?: string) => void;
   onDeleteFile?: (targetPath: string) => void;
   projectName?: string;
+  onRefreshTree?: () => void;
 }
 
 export default function CopilotDrawer({
@@ -47,6 +48,7 @@ export default function CopilotDrawer({
   onApplyCode,
   onDeleteFile,
   projectName,
+  onRefreshTree,
 }: CopilotDrawerProps) {
   const [promptInputText, setPromptInputText] = useState("");
   const [messagesList, setMessagesList] = useState<ChatMessageItem[]>([
@@ -238,6 +240,9 @@ export default function CopilotDrawer({
               ]);
             } else if (chunk.type === "tool_result") {
               setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
+              if (chunk.success && onRefreshTree && ["write_project_file", "delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
+                onRefreshTree();
+              }
               setMessagesList((prev) =>
                 prev.map((item) => {
                   if (item.id === chunk.id) {
@@ -288,7 +293,7 @@ export default function CopilotDrawer({
       ]);
 
       if (isModify && finalData.replacementCode) {
-        onApplyCode(finalData.replacementCode, false);
+        onApplyCode(finalData.replacementCode, false, finalData.targetPath || activeFilePath);
       }
     } catch (requestError: any) {
       setActiveTools([]);
@@ -322,7 +327,7 @@ export default function CopilotDrawer({
       previousList.map((item) => {
         if (item.id === messageId) {
           if (item.actionType === "modify_file" && item.replacementCode) {
-            onApplyCode(item.replacementCode, Boolean(selectedText));
+            onApplyCode(item.replacementCode, Boolean(selectedText), item.targetPath || activeFilePath);
           } else if (item.actionType === "delete_file" && item.targetPath && onDeleteFile) {
             const mcpTools = ["write_project_file", "delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
             if (!mcpTools.includes(item.targetPath)) {

@@ -421,12 +421,14 @@ function TreeItem(props: TreeItemProps) {
 export default function ProjectTree({
   project, selectedFile, onSelect,
   rootFile, onSetRootFile,
+  refreshTrigger,
 }: {
   project: string;
   selectedFile: string | null;
   onSelect: (path: string) => void;
   rootFile: string | null;
   onSetRootFile: (path: string) => void;
+  refreshTrigger?: number;
 }) {
   const [rootEntries, setRootEntries] = useState<Entry[] | null>(null);
   const [rootLoading, setRootLoading] = useState(true);
@@ -504,6 +506,12 @@ export default function ProjectTree({
     await loadRoot();
     for (const d of expandedDirs) await loadDir(d);
   }, [loadRoot, loadDir, expandedDirs]);
+
+  useEffect(() => {
+    if (refreshTrigger !== undefined) {
+      refreshTree();
+    }
+  }, [refreshTrigger, refreshTree]);
 
   // ── Context menu ───────────────────────────────────────────────────────────
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: Entry) => {

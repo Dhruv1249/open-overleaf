@@ -690,6 +690,7 @@ export default function AppShell() {
   // Compiler settings — persisted to GitHub (.overleaf.json) per project
   // localStorage is used as an instant-boot cache to avoid SSR flicker.
   const [compilerSettings, setCompilerSettings] = useState(DEFAULT_SETTINGS);
+  const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
   const settingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Track which project we last saved settings for (avoids stale saves on project switch)
   const settingsProjectRef = useRef<string | null>(null);
@@ -1155,6 +1156,7 @@ export default function AppShell() {
                   onSelect={handleSelectFile}
                   rootFile={compilerSettings.rootFile}
                   onSetRootFile={(p) => setCompilerSettings(s => ({ ...s, rootFile: p }))}
+                  refreshTrigger={treeRefreshNonce}
                 />
               </div>
 
@@ -1172,16 +1174,38 @@ export default function AppShell() {
                     warningCount={warningCount}
                     projectFiles={selectedFile ? [selectedFile] : ["main.tex"]}
                     getFileContent={(fp) => fp === selectedFile ? fileContent : ""}
-                    onApplyCode={(codeSnippet) => {
+                    onApplyCode={async (codeSnippet, isSelection, targetPath) => {
+                      let filePath = targetPath || selectedFile || "main.tex";
+                      let originalContent = fileContent;
+
+                      if (targetPath && targetPath !== selectedFile && project) {
+                        setSelectedFile(targetPath);
+                        setFileLoading(true);
+                        try {
+                          const res = await fetch(
+                            `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(targetPath)}`
+                          );
+                          const data = await res.json();
+                          originalContent = data.ok ? (data.content ?? "") : "";
+                          setFileContent(originalContent);
+                          currentContent.current = codeSnippet;
+                        } catch (e) {
+                          console.error(e);
+                        } finally {
+                          setFileLoading(false);
+                        }
+                      }
+
                       setPendingDiff({
-                        original: fileContent,
+                        original: originalContent,
                         modified: codeSnippet,
-                        filePath: selectedFile || "main.tex",
+                        filePath: filePath,
                       });
                       currentContent.current = codeSnippet;
                       scheduleAutoCompile();
                     }}
                     projectName={project || undefined}
+                    onRefreshTree={() => setTreeRefreshNonce(n => n + 1)}
                   />
                 </div>
               )}
