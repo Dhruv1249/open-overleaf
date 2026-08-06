@@ -664,7 +664,7 @@ CRITICAL GUIDELINES:
                     console.log("[Copilot API] Executing tool:", toolName, "args:", JSON.stringify(finalArgs));
                     toolResult = await callLocalMCPTool(toolName, finalArgs);
                     console.log("[Copilot API] Tool execution succeeded:", toolName, "result:", JSON.stringify(toolResult));
-                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult });
+                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult, arguments: toolArgs });
                   } catch (err: any) {
                     console.error("[Copilot API] Tool execution failed:", toolName, "error:", err.message || err);
                     sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: err.message });

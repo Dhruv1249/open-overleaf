@@ -686,6 +686,8 @@ export default function AppShell() {
   const [copilotHeight,     setCopilotHeight]     = useState(300);
   const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
   const [pendingDiff, setPendingDiff] = useState<{ original: string; modified: string; filePath: string } | null>(null);
+  const pendingDiffRef = useRef<{ original: string; modified: string; filePath: string } | null>(null);
+  useEffect(() => { pendingDiffRef.current = pendingDiff; }, [pendingDiff]);
 
   // Compiler settings — persisted to GitHub (.overleaf.json) per project
   // localStorage is used as an instant-boot cache to avoid SSR flicker.
@@ -948,7 +950,9 @@ export default function AppShell() {
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
     if (autoSaveTimer.current)    clearTimeout(autoSaveTimer.current);
 
-    setPendingDiff(null);
+    if (pendingDiffRef.current && pendingDiffRef.current.filePath !== filePath) {
+      setPendingDiff(null);
+    }
     setSelectedFile(filePath);
     setFileLoading(true);
     setFileContent("");
@@ -1206,6 +1210,7 @@ export default function AppShell() {
                     }}
                     projectName={project || undefined}
                     onRefreshTree={() => setTreeRefreshNonce(n => n + 1)}
+                    onOpenFile={handleSelectFile}
                   />
                 </div>
               )}

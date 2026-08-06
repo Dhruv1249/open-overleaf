@@ -663,6 +663,7 @@ export default function Editor({
   const docVersion = useRef(0);
   const themeObsRef = useRef<MutationObserver | null>(null);
   const activeWidgetsRef = useRef<any[]>([]);
+  const activeZonesRef = useRef<string[]>([]);
 
   const initialRef = useRef(initial);
   const pendingDiffRef = useRef(pendingDiff);
@@ -804,111 +805,131 @@ export default function Editor({
   }, [pendingDiff, onRejectDiffHunk]);
 
   useEffect(() => {
-    const monaco = monacoRef.current;
     const editor = editorInstance;
-    if (!monaco || !editor || !pendingDiff) return;
+    if (!editor || !pendingDiff) return;
 
-    const model = editor.getModel();
-    if (!model) return;
+    const overlayContainerId = "oo-diff-overlays";
+    const editorDomNode = editor.getDomNode();
+    if (!editorDomNode) return;
 
-    activeWidgetsRef.current.forEach((w) => {
+    let overlayContainer = (editorDomNode as Element).querySelector(`#${overlayContainerId}`) as HTMLDivElement | null;
+    if (!overlayContainer) {
+      overlayContainer = document.createElement("div");
+      overlayContainer.id = overlayContainerId;
+      overlayContainer.style.cssText = "position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:50;";
+      editorDomNode.style.position = "relative";
+      editorDomNode.appendChild(overlayContainer);
+    }
+    overlayContainer.innerHTML = "";
+
+    const oldWidgets = activeWidgetsRef.current || [];
+    oldWidgets.forEach((w) => {
       editor.removeContentWidget(w);
     });
     activeWidgetsRef.current = [];
 
+    const oldZones = activeZonesRef.current || [];
+    if (oldZones.length > 0) {
+      editor.changeViewZones((accessor: any) => {
+        oldZones.forEach((id) => {
+          accessor.removeZone(id);
+        });
+      });
+    }
+    activeZonesRef.current = [];
+
     const newWidgets: any[] = [];
-    hunks.forEach((hunk) => {
-      if (hunk.status !== "pending") return;
+    const newZones: string[] = [];
 
-      const domNode = document.createElement("div");
-      domNode.className = "oo-diff-widget";
-      domNode.style.display = "flex";
-      domNode.style.flexDirection = "row";
-      domNode.style.flexWrap = "nowrap";
-      domNode.style.alignItems = "center";
-      domNode.style.gap = "4px";
-      domNode.style.background = "var(--ink-float, #1c1917)";
-      domNode.style.border = "1px solid var(--rule-emphasis, #44403c)";
-      domNode.style.borderRadius = "12px";
-      domNode.style.padding = "2px 6px";
-      domNode.style.boxShadow = "0 2px 8px rgba(0,0,0,0.4)";
-      domNode.style.zIndex = "100";
-      domNode.style.fontFamily = "var(--font-ui, sans-serif)";
-      domNode.style.fontSize = "10px";
-      domNode.style.pointerEvents = "auto";
-      domNode.style.whiteSpace = "nowrap";
-      
-      domNode.style.setProperty("left", "auto", "important");
-      domNode.style.setProperty("right", "32px", "important");
+    const lineHeight = editor.getOption(monacoRef.current!.editor.EditorOption.lineHeight);
+    const layoutInfo = editor.getLayoutInfo();
+    const contentLeft = layoutInfo.contentLeft;
 
-      const label = document.createElement("span");
-      label.innerText = `Line ${hunk.line}:`;
-      label.style.color = "var(--ink-secondary, #a8a29e)";
-      label.style.marginRight = "2px";
-      label.style.fontWeight = "bold";
-      domNode.appendChild(label);
+    editor.changeViewZones((accessor: any) => {
+      hunks.forEach((hunk) => {
+        if (hunk.status !== "pending") return;
 
-      const acceptBtn = document.createElement("button");
-      acceptBtn.innerText = "Accept";
-      acceptBtn.style.background = "#10b981";
-      acceptBtn.style.color = "#ffffff";
-      acceptBtn.style.border = "none";
-      acceptBtn.style.borderRadius = "10px";
-      acceptBtn.style.padding = "1px 6px";
-      acceptBtn.style.cursor = "pointer";
-      acceptBtn.style.fontSize = "9px";
-      acceptBtn.style.fontWeight = "bold";
-      acceptBtn.style.lineHeight = "1.2";
-      acceptBtn.style.transition = "background 0.15s ease";
-      acceptBtn.onmouseenter = () => { acceptBtn.style.background = "#059669"; };
-      acceptBtn.onmouseleave = () => { acceptBtn.style.background = "#10b981"; };
-      acceptBtn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        handleAcceptHunk(hunk.id);
-      };
-      domNode.appendChild(acceptBtn);
+        const spacerNode = document.createElement("div");
+        spacerNode.style.cssText = `background:#18181b;border-top:1px solid #27272a;border-bottom:1px solid #27272a;height:100%;box-sizing:border-box;`;
 
-      const rejectBtn = document.createElement("button");
-      rejectBtn.innerText = "Reject";
-      rejectBtn.style.background = "#ef4444";
-      rejectBtn.style.color = "#ffffff";
-      rejectBtn.style.border = "none";
-      rejectBtn.style.borderRadius = "10px";
-      rejectBtn.style.padding = "1px 6px";
-      rejectBtn.style.cursor = "pointer";
-      rejectBtn.style.fontSize = "9px";
-      rejectBtn.style.fontWeight = "bold";
-      rejectBtn.style.lineHeight = "1.2";
-      rejectBtn.style.transition = "background 0.15s ease";
-      rejectBtn.onmouseenter = () => { rejectBtn.style.background = "#dc2626"; };
-      rejectBtn.onmouseleave = () => { rejectBtn.style.background = "#ef4444"; };
-      rejectBtn.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        handleRejectHunk(hunk.id);
-      };
-      domNode.appendChild(rejectBtn);
+        const overlayRow = document.createElement("div");
+        overlayRow.style.cssText = `
+          position: absolute;
+          left: ${contentLeft}px;
+          right: 0;
+          height: ${Math.round(lineHeight * 1.8)}px;
+          display: flex;
+          align-items: center;
+          padding-left: 14px;
+          gap: 8px;
+          pointer-events: auto;
+          background: #18181b;
+          border-top: 1px solid #27272a;
+          border-bottom: 1px solid #27272a;
+          box-sizing: border-box;
+          z-index: 50;
+        `;
 
-      const widget = {
-        getId: () => `hunk-widget-${hunk.id}`,
-        getDomNode: () => domNode,
-        getPosition: () => ({
-          position: { lineNumber: Math.max(1, Math.min(hunk.line, model.getLineCount())), column: 1 },
-          preference: [1]
-        })
-      };
+        const label = document.createElement("span");
+        label.innerText = "AI Suggestion:";
+        label.style.cssText = "color:#71717a;font-size:11px;font-weight:500;font-family:monospace;margin-right:4px;user-select:none;";
+        overlayRow.appendChild(label);
 
-      editor.addContentWidget(widget);
-      newWidgets.push(widget);
+        const acceptBtn = document.createElement("button");
+        acceptBtn.innerText = "Accept";
+        acceptBtn.style.cssText = `
+          background:#059669;color:#fff;border:none;border-radius:4px;
+          padding:2px 10px;cursor:pointer;font-size:10px;font-weight:600;
+          font-family:sans-serif;line-height:1.6;letter-spacing:0.02em;
+          transition:background 0.15s ease;pointer-events:auto;
+        `;
+        acceptBtn.onmouseenter = () => { acceptBtn.style.background = "#10b981"; };
+        acceptBtn.onmouseleave = () => { acceptBtn.style.background = "#059669"; };
+        acceptBtn.onclick = (e) => { e.preventDefault(); e.stopPropagation(); handleAcceptHunk(hunk.id); };
+        overlayRow.appendChild(acceptBtn);
+
+        const rejectBtn = document.createElement("button");
+        rejectBtn.innerText = "Reject";
+        rejectBtn.style.cssText = `
+          background:#be123c;color:#fff;border:none;border-radius:4px;
+          padding:2px 10px;cursor:pointer;font-size:10px;font-weight:600;
+          font-family:sans-serif;line-height:1.6;letter-spacing:0.02em;
+          transition:background 0.15s ease;pointer-events:auto;margin-left:4px;
+        `;
+        rejectBtn.onmouseenter = () => { rejectBtn.style.background = "#e11d48"; };
+        rejectBtn.onmouseleave = () => { rejectBtn.style.background = "#be123c"; };
+        rejectBtn.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          handleRejectHunk(hunk.id);
+        };
+        overlayRow.appendChild(rejectBtn);
+        overlayContainer!.appendChild(overlayRow);
+
+        const zoneId = accessor.addZone({
+          afterLineNumber: Math.max(0, hunk.line - 1),
+          heightInLines: 1.8,
+          domNode: spacerNode,
+          onDomNodeTop: (top: number) => {
+            overlayRow.style.top = `${top}px`;
+          },
+        });
+        newZones.push(zoneId);
+      });
     });
 
     activeWidgetsRef.current = newWidgets;
+    activeZonesRef.current = newZones;
 
     return () => {
-      newWidgets.forEach((w) => {
-        editor.removeContentWidget(w);
-      });
+      if (overlayContainer) overlayContainer.innerHTML = "";
+      if (newZones.length > 0) {
+        editor.changeViewZones((accessor: any) => {
+          newZones.forEach((id) => {
+            accessor.removeZone(id);
+          });
+        });
+      }
     };
   }, [editorInstance, pendingDiff, hunks, handleAcceptHunk, handleRejectHunk]);
 

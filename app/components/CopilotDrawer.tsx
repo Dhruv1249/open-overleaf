@@ -32,6 +32,7 @@ export interface CopilotDrawerProps {
   onDeleteFile?: (targetPath: string) => void;
   projectName?: string;
   onRefreshTree?: () => void;
+  onOpenFile?: (filePath: string) => void;
 }
 
 export default function CopilotDrawer({
@@ -49,6 +50,7 @@ export default function CopilotDrawer({
   onDeleteFile,
   projectName,
   onRefreshTree,
+  onOpenFile,
 }: CopilotDrawerProps) {
   const [promptInputText, setPromptInputText] = useState("");
   const [messagesList, setMessagesList] = useState<ChatMessageItem[]>([
@@ -240,8 +242,24 @@ export default function CopilotDrawer({
               ]);
             } else if (chunk.type === "tool_result") {
               setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
-              if (chunk.success && onRefreshTree && ["delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
-                onRefreshTree();
+              if (chunk.success) {
+                if (onRefreshTree && ["apply_patch", "delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
+                  onRefreshTree();
+                }
+                if (chunk.name === "apply_patch") {
+                  const patchedPath = chunk.arguments?.filePath;
+                  const originalContent: string | undefined = chunk.result?.originalContent;
+                  const updatedContent: string | undefined = chunk.result?.updatedContent;
+                  if (patchedPath && originalContent !== undefined && updatedContent !== undefined) {
+                    if (onOpenFile) onOpenFile(patchedPath);
+                    onApplyCode(updatedContent, false, patchedPath);
+                  } else if (patchedPath && onOpenFile) {
+                    onOpenFile(patchedPath);
+                  }
+                } else if (["write_project_file", "rename_file"].includes(chunk.name) && onOpenFile) {
+                  const patchedPath = chunk.arguments?.filePath ?? chunk.arguments?.targetPath ?? chunk.arguments?.newPath;
+                  if (patchedPath) onOpenFile(patchedPath);
+                }
               }
               setMessagesList((prev) =>
                 prev.map((item) => {

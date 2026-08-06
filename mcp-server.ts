@@ -700,7 +700,12 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       userGhToken
     );
 
-    return { success: true, message: `Successfully applied ${patches.length} patch(es) to ${filePath}` };
+    return {
+      success: true,
+      message: `Successfully applied ${patches.length} patch(es) to ${filePath}`,
+      originalContent: originalText,
+      updatedContent,
+    };
   }
 
   throw new Error(`Unknown MCP tool requested: ${name}`);
