@@ -324,7 +324,7 @@ export default function CopilotDrawer({
           if (item.actionType === "modify_file" && item.replacementCode) {
             onApplyCode(item.replacementCode, Boolean(selectedText));
           } else if (item.actionType === "delete_file" && item.targetPath && onDeleteFile) {
-            const mcpTools = ["rename_file", "update_project_settings", "sync_to_drive"];
+            const mcpTools = ["write_project_file", "delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
             if (!mcpTools.includes(item.targetPath)) {
               onDeleteFile(item.targetPath);
             }

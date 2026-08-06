@@ -211,6 +211,18 @@ async function syncWithWebUIAPI(method: string, apiPath: string, body?: any, use
  * Core execution engine carrying out individual MCP tool logic.
  */
 async function executeMCPTool(name: string, toolArguments: Record<string, any>): Promise<any> {
+  console.log(`[MCP Server] Call received for tool: "${name}" | Args:`, JSON.stringify(toolArguments));
+  try {
+    const result = await executeMCPToolInner(name, toolArguments);
+    console.log(`[MCP Server] Tool "${name}" execution succeeded | Result:`, JSON.stringify(result));
+    return result;
+  } catch (error: any) {
+    console.error(`[MCP Server] Tool "${name}" execution failed | Error:`, error.message || error);
+    throw error;
+  }
+}
+
+async function executeMCPToolInner(name: string, toolArguments: Record<string, any>): Promise<any> {
   const userGhToken = toolArguments?.githubToken ? String(toolArguments.githubToken) : undefined;
 
   if (name === "list_projects") {
@@ -1003,6 +1015,7 @@ async function handleHttpRequest(
   serverInstance: Server
 ): Promise<void> {
   const requestUrl = request.url || "/";
+  console.log(`[MCP Server HTTP] Request: ${request.method} ${requestUrl}`);
 
   const activeMCPToken = getEffectiveMCPToken();
   if (activeMCPToken) {

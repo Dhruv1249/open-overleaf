@@ -62,6 +62,31 @@ const functionDeclarations = [
     }
   },
   {
+    name: "write_project_file",
+    description: "Creates or overwrites a file with text content in the LaTeX project. Requires user approval.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        filePath: { type: "STRING", description: "Relative file path inside project, e.g., main.tex" },
+        content: { type: "STRING", description: "Text content of the file" }
+      },
+      required: ["projectName", "filePath", "content"]
+    }
+  },
+  {
+    name: "delete_file",
+    description: "Deletes a specific file or folder inside a target project on GitHub. Requires user approval.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" }
+      },
+      required: ["projectName", "filePath"]
+    }
+  },
+  {
     name: "compile_project",
     description: "Triggers LaTeX compilation for an open-overleaf project on the backend, fetching fresh files from GitHub.",
     parameters: {
@@ -146,15 +171,69 @@ const functionDeclarations = [
     }
   },
   {
-    name: "sync_to_drive",
-    description: "Synchronizes the compiled project PDF to Google Drive. Requires user approval.",
+    name: "read_file_lines",
+    description: "Reads specific line ranges [startLine, endLine] from a file inside the project.",
     parameters: {
       type: "OBJECT",
       properties: {
         projectName: { type: "STRING", description: "Name of the LaTeX project" },
-        mainFile: { type: "STRING", description: "The main .tex file name, defaults to main.tex" }
+        filePath: { type: "STRING", description: "Relative file path inside project" },
+        startLine: { type: "INTEGER", description: "1-indexed starting line to read" },
+        endLine: { type: "INTEGER", description: "1-indexed ending line to read" }
       },
-      required: ["projectName"]
+      required: ["projectName", "filePath", "startLine", "endLine"]
+    }
+  },
+  {
+    name: "get_file_history",
+    description: "Gets commit history (list of SHAs and commit messages) for a specific file in a project from GitHub.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" },
+        perPage: { type: "INTEGER", description: "Maximum number of history items to fetch, defaults to 30" }
+      },
+      required: ["projectName", "filePath"]
+    }
+  },
+  {
+    name: "get_file_at_revision",
+    description: "Retrieves the content of a file at a specific Git commit SHA from GitHub.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" },
+        sha: { type: "STRING", description: "Commit SHA hash" }
+      },
+      required: ["projectName", "filePath", "sha"]
+    }
+  },
+  {
+    name: "apply_patch",
+    description: "Applies targeted chunk-based line replacements to a file. Use this for making surgical modifications instead of rewriting the entire file.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the project" },
+        filePath: { type: "STRING", description: "Relative file path inside project" },
+        patches: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              startLine: { type: "INTEGER", description: "1-indexed starting line number of the block to replace" },
+              endLine: { type: "INTEGER", description: "1-indexed ending line number of the block to replace" },
+              originalContent: { type: "STRING", description: "The exact content expected in the target file at those lines" },
+              newContent: { type: "STRING", description: "The replacement content" }
+            },
+            required: ["startLine", "endLine", "originalContent", "newContent"]
+          },
+          description: "List of patch chunks to apply"
+        }
+      },
+      required: ["projectName", "filePath", "patches"]
     }
   }
 ];
@@ -243,7 +322,7 @@ async function fetchGeminiWithFallback(
     const modelName = modelsCascade[modelIndex];
     const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-    console.log("Calling Gemini model:", modelName);
+    console.log(`[Gemini API] Calling ${modelName} with payload:`, JSON.stringify(payload));
 
     try {
       const response = await fetch(targetGeminiEndpoint, {
@@ -253,20 +332,21 @@ async function fetchGeminiWithFallback(
       });
 
       if (response.status === 429) {
-        console.warn(`Model ${modelName} returned 429. Trying next model...`);
+        console.warn(`[Gemini API] Model ${modelName} returned 429. Trying next model...`);
         continue;
       }
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`Model ${modelName} returned error ${response.status}: ${errorText}`);
+        console.error(`[Gemini API] Model ${modelName} returned error ${response.status}: ${errorText}`);
         return { success: false, error: `Gemini API Error (${response.status}): ${errorText}`, status: response.status };
       }
 
       const data = await response.json();
+      console.log(`[Gemini API] Model ${modelName} responded:`, JSON.stringify(data));
       return { success: true, data };
     } catch (err: any) {
-      console.error(`Fetch error calling ${modelName}:`, err.message);
+      console.error(`[Gemini API] Fetch error calling ${modelName}:`, err.message || err);
       if (modelIndex === modelsCascade.length - 1) {
         return { success: false, error: err.message || "Failed to contact Gemini API", status: 500 };
       }
@@ -386,12 +466,14 @@ CRITICAL GUIDELINES:
 3. If the user greets you or says hello, DO NOT list files, read files, or compile the project. Just reply with a helpful greeting text directly.
 4. When you have finished executing tools and have the necessary information to reply, stop calling tools and immediately return the final JSON text response. Do not perform unnecessary or redundant operations.
 5. NEVER write your own response JSON or assistant messages into files like '.overleaf.json' or '.tex' unless specifically instructed by the user to write that content.
-6. To inspect the contents, read the text, or see code inside any file (like a .tex, .json, or .bib file), you MUST call the 'read_project_file' tool. Do NOT use 'compile_project' or other tools to read/inspect files.
+6. To inspect the contents, read the text, or see code inside any file (like a .tex, .json, or .bib file), you MUST call the 'read_project_file' or 'read_file_lines' tool. Do NOT use 'compile_project' or other tools to read/inspect files.
 7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
 8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.
-9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' to attempt to fix the error.
-10. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
-11. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.`
+9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'write_project_file' or 'apply_patch' to attempt to fix the error.
+10. Use 'apply_patch' when you need to make targeted line-level modifications to a file. It is much faster and more token-efficient than overwriting the entire file using 'write_project_file'.
+11. Use 'get_file_history' and 'get_file_at_revision' to inspect past commits/versions of a file when the user asks to see history, revert a change, or when you need to understand how a recent update broke the compilation.
+12. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
+13. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.`
         }
       ]
     };
@@ -516,7 +598,7 @@ CRITICAL GUIDELINES:
                       githubToken: userAccessToken || toolArgs?.githubToken,
                     };
 
-                    const approvalRequiredTools = ["rename_file", "update_project_settings", "sync_to_drive"];
+                    const approvalRequiredTools = ["write_project_file", "delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
                     const requiresApproval = approvalRequiredTools.includes(toolName);
 
                     if (requiresApproval) {
@@ -544,12 +626,12 @@ CRITICAL GUIDELINES:
                       }
                     }
 
-                    console.log("Executing local tool:", toolName, "args:", JSON.stringify(finalArgs));
+                    console.log("[Copilot API] Executing tool:", toolName, "args:", JSON.stringify(finalArgs));
                     toolResult = await callLocalMCPTool(toolName, finalArgs);
-                    console.log("Tool execution succeeded:", toolName);
+                    console.log("[Copilot API] Tool execution succeeded:", toolName, "result:", JSON.stringify(toolResult));
                     sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult });
                   } catch (err: any) {
-                    console.error("Tool execution failed:", toolName, err.message);
+                    console.error("[Copilot API] Tool execution failed:", toolName, "error:", err.message || err);
                     sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: err.message });
                     toolResult = { error: err.message || "Failed to execute tool" };
                   }
@@ -582,7 +664,7 @@ CRITICAL GUIDELINES:
                 }
                 rawCandidateText = lines.join("\n").trim();
               }
-              console.log("Gemini returned text response length:", rawCandidateText.length);
+              console.log("[Copilot API] Gemini raw candidate text:", rawCandidateText);
 
               let parsedJsonResponse = {
                 message: rawCandidateText,
@@ -594,7 +676,7 @@ CRITICAL GUIDELINES:
 
               try {
                 parsedJsonResponse = JSON.parse(rawCandidateText);
-                console.log("Parsed JSON response successfully");
+                console.log("[Copilot API] Parsed JSON response successfully:", JSON.stringify(parsedJsonResponse));
               } catch {
                 let parsedInnerJson = false;
                 const startIdx = rawCandidateText.indexOf("{");
@@ -604,14 +686,14 @@ CRITICAL GUIDELINES:
                     const innerJsonStr = rawCandidateText.slice(startIdx, endIdx + 1);
                     parsedJsonResponse = JSON.parse(innerJsonStr);
                     parsedInnerJson = true;
-                    console.log("Extracted and parsed inner JSON block successfully");
+                    console.log("[Copilot API] Extracted and parsed inner JSON block successfully:", JSON.stringify(parsedJsonResponse));
                   } catch {
-                    console.warn("Failed to parse extracted inner JSON block");
+                    console.warn("[Copilot API] Failed to parse extracted inner JSON block");
                   }
                 }
 
                 if (!parsedInnerJson) {
-                  console.warn("Failed to parse response as JSON, falling back to plaintext");
+                  console.warn("[Copilot API] Failed to parse response as JSON, falling back to plaintext");
                   const containsLatex = rawCandidateText.includes("\\") || rawCandidateText.includes("{") || rawCandidateText.includes("}");
                   if (containsLatex) {
                     parsedJsonResponse = {
