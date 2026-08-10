@@ -658,6 +658,98 @@ function PdfPanel({
   );
 }
 
+// ── Partial Code Snippet Merger ──────────────────────────────────────────────
+export function mergePartialSnippet(original: string, snippet: string): string {
+  if (!original || !original.trim()) return snippet;
+  const trimmedSnippet = snippet.trim();
+  if (!trimmedSnippet) return original;
+
+  // 1. If snippet is already a complete LaTeX document, return directly
+  if (
+    trimmedSnippet.startsWith("\\documentclass") ||
+    (trimmedSnippet.includes("\\begin{document}") && trimmedSnippet.includes("\\end{document}"))
+  ) {
+    return snippet;
+  }
+
+  let result = original;
+
+  // 2. Extract and replace \newcommand / \renew\provide\command / \titleformat / \setlist blocks
+  const commandRegex = /(\\(?:new|renew|provide)command\*?\s*\{?\\\w+\}?[\s\S]*?)(?=\\(?:new|renew|provide)command|\n\n\\|\n\\begin|\n%-----------|$)/g;
+  const snippetCommands = Array.from(trimmedSnippet.matchAll(commandRegex));
+
+  if (snippetCommands.length > 0) {
+    for (const match of snippetCommands) {
+      const fullCmd = match[1].trim();
+      const nameMatch = fullCmd.match(/\\(?:new|renew|provide)command\*?\s*\{?(\\w+)\}?/);
+      if (nameMatch) {
+        const cmdSymbol = nameMatch[1];
+        const targetRegex = new RegExp(
+          `(\\\\(?:new|renew|provide)command\\*?\\s*\\{?\\\\${cmdSymbol}\\}?[\\s\\S]*?)(?=\\\\(?:new|renew|provide)command|\\n\\n\\\\|\\n\\\\begin|\\n%-----------|$)`
+        );
+        if (targetRegex.test(result)) {
+          result = result.replace(targetRegex, fullCmd);
+        }
+      }
+    }
+  }
+
+  // 3. Section/Comment block replacement (%-----------SECTION-----------)
+  const sectionCommentRegex = /(%-----------[A-Z0-9 &_\-]+-----------\n[\s\S]*?)(?=%-----------|\n\\end\{document\}|$)/gi;
+  const snippetSections = Array.from(trimmedSnippet.matchAll(sectionCommentRegex));
+
+  if (snippetSections.length > 0) {
+    for (const match of snippetSections) {
+      const blockText = match[1].trim();
+      const headerLine = blockText.split("\n")[0].trim();
+      if (headerLine.startsWith("%-----------")) {
+        const escapedHeader = headerLine.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const origSecRegex = new RegExp(`(${escapedHeader}\\n[\\s\\S]*?)(?=%-----------|\\n\\\\end\\{document\\}|$)`, "i");
+        if (origSecRegex.test(result)) {
+          result = result.replace(origSecRegex, blockText + "\n\n");
+        }
+      }
+    }
+  }
+
+  // 4. Line-based fuzzy block replacement matching first and last lines
+  if (result === original && snippetCommands.length === 0 && snippetSections.length === 0) {
+    const snippetLines = trimmedSnippet.split("\n").map(l => l.trim()).filter(Boolean);
+    if (snippetLines.length >= 2) {
+      const firstLine = snippetLines[0];
+      const lastLine = snippetLines[snippetLines.length - 1];
+
+      const origLines = result.split("\n");
+      let startIdx = -1;
+      let endIdx = -1;
+
+      for (let i = 0; i < origLines.length; i++) {
+        if (origLines[i].trim() === firstLine) {
+          startIdx = i;
+          break;
+        }
+      }
+
+      if (startIdx !== -1) {
+        for (let j = startIdx; j < origLines.length; j++) {
+          if (origLines[j].trim() === lastLine) {
+            endIdx = j;
+            break;
+          }
+        }
+      }
+
+      if (startIdx !== -1 && endIdx !== -1 && endIdx >= startIdx) {
+        const before = origLines.slice(0, startIdx).join("\n");
+        const after = origLines.slice(endIdx + 1).join("\n");
+        result = `${before}\n${snippet}\n${after}`;
+      }
+    }
+  }
+
+  return result;
+}
+
 // ── AppShell ──────────────────────────────────────────────────────────────────
 export default function AppShell() {
   const [project,      setProject]      = useState<string | null>(null);
@@ -693,7 +785,36 @@ export default function AppShell() {
   // localStorage is used as an instant-boot cache to avoid SSR flicker.
   const [compilerSettings, setCompilerSettings] = useState(DEFAULT_SETTINGS);
   const [treeRefreshNonce, setTreeRefreshNonce] = useState(0);
+  const [projectFilesList, setProjectFilesList] = useState<string[]>([]);
+  const fileCacheRef = useRef<Record<string, string>>({});
   const settingsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchProjectFiles = useCallback(async (projName: string) => {
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(projName)}/tree?recursive=true`);
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.entries)) {
+        const files = data.entries.filter((e: any) => e.type === "file").map((e: any) => e.path);
+        setProjectFilesList(files);
+      }
+    } catch (err) {
+      console.error("Failed to fetch project files:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (project) {
+      fetchProjectFiles(project);
+    } else {
+      setProjectFilesList([]);
+    }
+  }, [project, treeRefreshNonce, fetchProjectFiles]);
+
+  useEffect(() => {
+    if (selectedFile && fileContent) {
+      fileCacheRef.current[selectedFile] = fileContent;
+    }
+  }, [selectedFile, fileContent]);
   // Track which project we last saved settings for (avoids stale saves on project switch)
   const settingsProjectRef = useRef<string | null>(null);
 
@@ -1170,16 +1291,31 @@ export default function AppShell() {
                   <CopilotDrawer
                     isOpen={showCopilot}
                     onClose={() => setShowCopilot(false)}
-                    activeFilePath={selectedFile || "main.tex"}
+                    activeFilePath={selectedFile || ""}
                     selectedText=""
                     fullFileContent={fileContent}
                     compileLog={compileLog}
                     errorCount={errorCount}
                     warningCount={warningCount}
-                    projectFiles={selectedFile ? [selectedFile] : ["main.tex"]}
-                    getFileContent={(fp) => fp === selectedFile ? fileContent : ""}
+                    projectFiles={projectFilesList}
+                    getFileContent={async (fp) => {
+                      if (fp === selectedFile) return fileContent;
+                      if (fileCacheRef.current[fp] !== undefined) return fileCacheRef.current[fp];
+                      if (!project) return "";
+                      try {
+                        const res = await fetch(
+                          `/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(fp)}`
+                        );
+                        const data = await res.json();
+                        const content = data.ok ? (data.content ?? "") : "";
+                        fileCacheRef.current[fp] = content;
+                        return content;
+                      } catch {
+                        return "";
+                      }
+                    }}
                     onApplyCode={async (codeSnippet, isSelection, targetPath) => {
-                      let filePath = targetPath || selectedFile || "main.tex";
+                      let filePath = targetPath || selectedFile || (projectFilesList[0] ?? "");
                       let originalContent = fileContent;
 
                       if (targetPath && targetPath !== selectedFile && project) {

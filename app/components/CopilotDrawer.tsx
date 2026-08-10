@@ -27,7 +27,7 @@ export interface CopilotDrawerProps {
   errorCount?: number;
   warningCount?: number;
   projectFiles: string[];
-  getFileContent: (filePath: string) => string;
+  getFileContent: (filePath: string) => string | Promise<string>;
   onApplyCode: (replacementCode: string, isSelection: boolean, targetPath?: string) => void;
   onDeleteFile?: (targetPath: string) => void;
   projectName?: string;
@@ -67,6 +67,16 @@ export default function CopilotDrawer({
   const abortControllerRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+
+  // Autocomplete for @mentions
+  const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState("");
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
+  const [mentionStartIndex, setMentionStartIndex] = useState<number | null>(null);
+
+  const filteredMentionFiles = projectFiles.filter((f) =>
+    f.toLowerCase().includes(mentionQuery.toLowerCase())
+  );
 
   useEffect(() => {
     const key = `copilot_history_${projectName || "default"}`;
@@ -135,6 +145,7 @@ export default function CopilotDrawer({
     const targetTextToSubmit = overridePromptText || promptInputText;
     if (!targetTextToSubmit.trim() || isLoadingState) return;
 
+    setShowMentionSuggestions(false);
     const userMessageId = `user-${Date.now()}`;
     const newUserMessage: ChatMessageItem = {
       id: userMessageId,
@@ -149,8 +160,25 @@ export default function CopilotDrawer({
     setIsLoadingState(true);
 
     const fileContextsRecord: Record<string, string> = {};
-    for (const fileNameItem of projectFiles) {
-      fileContextsRecord[fileNameItem] = getFileContent(fileNameItem);
+    const atMentionMatches = targetTextToSubmit.match(/@([a-zA-Z0-9_.\-\/]+)/g) || [];
+    const filesToFetch = new Set<string>();
+
+    if (activeFilePath) {
+      filesToFetch.add(activeFilePath);
+    }
+    for (const match of atMentionMatches) {
+      const fName = match.slice(1);
+      if (projectFiles.includes(fName)) {
+        filesToFetch.add(fName);
+      }
+    }
+
+    for (const fName of Array.from(filesToFetch)) {
+      try {
+        fileContextsRecord[fName] = await getFileContent(fName);
+      } catch (err) {
+        fileContextsRecord[fName] = "";
+      }
     }
 
     try {
@@ -164,7 +192,7 @@ export default function CopilotDrawer({
           prompt: targetTextToSubmit,
           fileContexts: fileContextsRecord,
           selectedText: selectedText,
-          fullFileContent: fullFileContent,
+          fullFileContent: activeFilePath ? fullFileContent : "",
           activeFilePath: activeFilePath,
           compileLog: compileLog,
           errorCount: errorCount,
@@ -387,6 +415,53 @@ export default function CopilotDrawer({
     setPromptInputText((previousText) => `${previousText} @${fileName} `);
   };
 
+  const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const cursorPos = e.target.selectionStart;
+    setPromptInputText(value);
+
+    const textBeforeCursor = value.slice(0, cursorPos);
+    const atIndex = textBeforeCursor.lastIndexOf("@");
+
+    if (atIndex !== -1) {
+      const charBeforeAt = atIndex > 0 ? textBeforeCursor[atIndex - 1] : " ";
+      const query = textBeforeCursor.slice(atIndex + 1);
+      if ((/\s/.test(charBeforeAt) || atIndex === 0) && !/\s/.test(query)) {
+        setMentionQuery(query);
+        setMentionStartIndex(atIndex);
+        setMentionSelectedIndex(0);
+        setShowMentionSuggestions(true);
+        return;
+      }
+    }
+    setShowMentionSuggestions(false);
+  };
+
+  const selectMentionFile = (fileName: string) => {
+    const textarea = textareaRef.current;
+    const cursorPos = textarea?.selectionStart || promptInputText.length;
+    const startIndex = mentionStartIndex !== null ? mentionStartIndex : promptInputText.lastIndexOf("@");
+
+    if (startIndex !== -1) {
+      const beforeAt = promptInputText.slice(0, startIndex);
+      const afterCursor = promptInputText.slice(cursorPos);
+      const newText = `${beforeAt}@${fileName} ${afterCursor}`;
+      setPromptInputText(newText);
+      setShowMentionSuggestions(false);
+
+      setTimeout(() => {
+        if (textarea) {
+          const newPos = startIndex + fileName.length + 2;
+          textarea.focus();
+          textarea.setSelectionRange(newPos, newPos);
+        }
+      }, 0);
+    } else {
+      insertAtMention(fileName);
+      setShowMentionSuggestions(false);
+    }
+  };
+
   return (
     <div className="flex flex-col h-full bg-zinc-900 border-t border-zinc-800 text-zinc-100 shadow-2xl">
       <div className="p-3 border-b border-zinc-800 flex items-center justify-between bg-zinc-950">
@@ -422,17 +497,16 @@ export default function CopilotDrawer({
         </div>
       </div>
 
-      <div className="px-3 py-1.5 bg-zinc-950/50 border-b border-zinc-800/50 flex flex-wrap items-center gap-1 text-[11px]">
+      <div className="px-3 py-1.5 bg-zinc-950/50 border-b border-zinc-800/50 flex flex-wrap items-center gap-1.5 text-[11px]">
         <span className="text-zinc-500 font-medium">Attach Context:</span>
-        {projectFiles.map((fileItem) => (
-          <button
-            key={fileItem}
-            onClick={() => insertAtMention(fileItem)}
-            className="bg-zinc-800 hover:bg-zinc-700 text-cyan-400 px-1.5 py-0.5 rounded text-[10px] transition-colors"
-          >
-            @{fileItem}
-          </button>
-        ))}
+        {activeFilePath ? (
+          <span className="bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 px-2 py-0.5 rounded text-[10px] font-mono flex items-center gap-1">
+            <span>@{activeFilePath}</span>
+            <span className="text-[9px] text-cyan-400/80">(active)</span>
+          </span>
+        ) : (
+          <span className="text-zinc-500 italic text-[10px]">No active file</span>
+        )}
       </div>
 
       {selectedText && (
@@ -532,13 +606,69 @@ export default function CopilotDrawer({
         <div ref={chatBottomRef} />
       </div>
 
-      <div className="p-1.5 border-t border-zinc-800 bg-zinc-950">
+      <div className="p-1.5 border-t border-zinc-800 bg-zinc-950 relative">
+        {showMentionSuggestions && (
+          <div className="absolute bottom-full left-1.5 right-1.5 mb-1 bg-zinc-900 border border-zinc-700/80 rounded-md shadow-2xl z-50 max-h-48 overflow-y-auto panel-scroll p-1">
+            <div className="px-2 py-1 text-[10px] font-semibold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 flex justify-between items-center select-none">
+              <span>Files in project</span>
+              <span className="text-[9px] text-zinc-500 font-normal">↑↓ Navigate · ↵ Select · Esc Close</span>
+            </div>
+            {filteredMentionFiles.length === 0 ? (
+              <div className="px-2 py-2 text-[11px] text-zinc-500 italic">No matching files found</div>
+            ) : (
+              filteredMentionFiles.map((fileItem, idx) => (
+                <div
+                  key={fileItem}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    selectMentionFile(fileItem);
+                  }}
+                  className={`px-2 py-1.5 text-xs rounded cursor-pointer flex items-center justify-between transition-colors ${
+                    idx === mentionSelectedIndex
+                      ? "bg-cyan-900/60 text-cyan-200 font-medium"
+                      : "text-zinc-300 hover:bg-zinc-800"
+                  }`}
+                >
+                  <span className="font-mono text-[11px]">@{fileItem}</span>
+                  {fileItem === activeFilePath && (
+                    <span className="text-[9px] bg-cyan-950 text-cyan-400 border border-cyan-800/60 px-1 py-0.2 rounded font-sans">
+                      active
+                    </span>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        )}
         <div className="flex gap-1.5">
           <textarea
             ref={textareaRef}
             value={promptInputText}
-            onChange={(e) => setPromptInputText(e.target.value)}
+            onChange={handleTextareaChange}
             onKeyDown={(e) => {
+              if (showMentionSuggestions && filteredMentionFiles.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setMentionSelectedIndex((prev) => (prev + 1) % filteredMentionFiles.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setMentionSelectedIndex((prev) => (prev - 1 + filteredMentionFiles.length) % filteredMentionFiles.length);
+                  return;
+                }
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  selectMentionFile(filteredMentionFiles[mentionSelectedIndex]);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setShowMentionSuggestions(false);
+                  return;
+                }
+              }
+
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 handleSendPrompt();
@@ -547,7 +677,7 @@ export default function CopilotDrawer({
             placeholder={
               selectedText
                 ? "Refine highlighted selection..."
-                : "Ask Copilot to edit or fix LaTeX..."
+                : "Ask Copilot to edit or fix LaTeX (type @ for files)..."
             }
             className="flex-1 bg-zinc-900 border border-zinc-800 rounded px-2.5 py-[6px] text-[11px] text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-cyan-500 resize-none min-h-[32px] max-h-[110px] h-auto overflow-y-auto panel-scroll"
           />
@@ -572,3 +702,4 @@ export default function CopilotDrawer({
     </div>
   );
 }
+

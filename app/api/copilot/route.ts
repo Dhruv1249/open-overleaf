@@ -326,8 +326,22 @@ function parseLaxJson(str: string): any {
     } else {
       if (char === '"') {
         inString = !inString;
+        fixed += char;
+      } else if (inString) {
+        if (char === '\n') {
+          fixed += "\\n";
+        } else if (char === '\r') {
+          fixed += "\\r";
+        } else if (char === '\t') {
+          fixed += "\\t";
+        } else if (char.charCodeAt(0) < 32) {
+          fixed += "\\u" + char.charCodeAt(0).toString(16).padStart(4, "0");
+        } else {
+          fixed += char;
+        }
+      } else {
+        fixed += char;
       }
-      fixed += char;
     }
   }
 
@@ -405,7 +419,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     }
 
     const userPromptText = payload.prompt || "";
-    const activeFilePath = payload.activeFilePath || "main.tex";
+    const activeFilePath = payload.activeFilePath || "";
     const selectedTextSnippet = payload.selectedText || "";
     const fullFileContentString = payload.fullFileContent || "";
     const fileContextsMap = payload.fileContexts || {};
@@ -414,7 +428,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const warningCountNumber = payload.warningCount || 0;
     const projectName = payload.projectName || "";
 
-    console.log("Copilot call: prompt =", userPromptText, "project =", projectName, "file =", activeFilePath);
+    console.log("Copilot call: prompt =", userPromptText, "project =", projectName, "file =", activeFilePath || "(none)");
 
     const geminiApiKeyString = payload.apiKey || process.env.GEMINI_API_KEY || "";
     if (!geminiApiKeyString) {
@@ -442,10 +456,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (projectName) {
       compiledContextPrompt += `Current Project Name: ${projectName}\n`;
     }
-    compiledContextPrompt += `Active File: ${activeFilePath}\n`;
+    if (activeFilePath) {
+      compiledContextPrompt += `Active File: ${activeFilePath}\n`;
+    } else {
+      compiledContextPrompt += `Active File: None (No file currently open in editor)\n`;
+    }
 
     if (!isGreeting) {
-      if (fullFileContentString) {
+      if (activeFilePath && fullFileContentString) {
         compiledContextPrompt += `Full Content of ${activeFilePath}:\n\`\`\`latex\n${fullFileContentString}\n\`\`\`\n\n`;
       }
 
@@ -472,8 +490,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     if (selectedTextSnippet) {
       compiledContextPrompt += `User Highlighted Selection:\n\`\`\`latex\n${selectedTextSnippet}\n\`\`\`\n`;
       compiledContextPrompt += `TASK INSTRUCTION: The user has highlighted the section above. Modify or refine ONLY this highlighted text based on the request while preserving surrounding LaTeX compatibility.\n\n`;
-    } else {
+    } else if (activeFilePath) {
       compiledContextPrompt += `TASK INSTRUCTION: Answer the user query and generate/refine LaTeX code or propose file operations for ${activeFilePath}.\n\n`;
+    } else {
+      compiledContextPrompt += `TASK INSTRUCTION: Answer the user query and generate/refine LaTeX code or propose file operations for the project.\n\n`;
     }
 
     compiledContextPrompt += `User Request: ${userPromptText}\n\n`;
@@ -482,7 +502,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     compiledContextPrompt += `{\n`;
     compiledContextPrompt += `  "message": "Brief natural language explanation of your response or proposed fix",\n`;
     compiledContextPrompt += `  "actionType": "modify_file" | "delete_file" | "none",\n`;
-    compiledContextPrompt += `  "targetPath": "${activeFilePath}",\n`;
+    compiledContextPrompt += `  "targetPath": "${activeFilePath || "relative/path/to/target/file.tex"}",\n`;
     compiledContextPrompt += `  "actionDescription": "Human readable description of proposed modification for user approval",\n`;
     compiledContextPrompt += `  "replacementCode": "The refined or generated LaTeX code snippet to insert or replace"\n`;
     compiledContextPrompt += `}\n`;
@@ -701,61 +721,75 @@ CRITICAL GUIDELINES:
               }
               console.log("[Copilot API] Gemini raw candidate text:", rawCandidateText);
 
-              let parsedJsonResponse = {
-                message: rawCandidateText,
-                actionType: "none",
-                targetPath: activeFilePath,
-                actionDescription: "",
-                replacementCode: "",
-              };
+              let parsedJsonResponse: any = null;
+              let parseError: any = null;
 
               try {
                 parsedJsonResponse = parseLaxJson(rawCandidateText);
                 console.log("[Copilot API] Parsed JSON response successfully:", JSON.stringify(parsedJsonResponse));
-              } catch (err) {
-                let parsedInnerJson = false;
+              } catch (err: any) {
+                parseError = err;
                 const startIdx = rawCandidateText.indexOf("{");
                 const endIdx = rawCandidateText.lastIndexOf("}");
                 if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
                   try {
                     const innerJsonStr = rawCandidateText.slice(startIdx, endIdx + 1);
                     parsedJsonResponse = parseLaxJson(innerJsonStr);
-                    parsedInnerJson = true;
+                    parseError = null;
                     console.log("[Copilot API] Extracted and parsed inner JSON block successfully:", JSON.stringify(parsedJsonResponse));
-                  } catch {
-                    console.warn("[Copilot API] Failed to parse extracted inner JSON block");
-                  }
-                }
-
-                if (!parsedInnerJson) {
-                  const isJsonLike = rawCandidateText.trim().startsWith("{") && rawCandidateText.includes("replacementCode");
-                  if (isJsonLike) {
-                    console.error("[Copilot API] JSON-like response failed parsing even with lax mode:", err);
-                    throw new Error("Received malformed JSON response from AI model. Please try again.");
-                  }
-
-                  console.warn("[Copilot API] Failed to parse response as JSON, falling back to plaintext");
-                  const containsLatex = rawCandidateText.includes("\\") || rawCandidateText.includes("{") || rawCandidateText.includes("}");
-                  if (containsLatex) {
-                    parsedJsonResponse = {
-                      message: "Generated update:",
-                      actionType: "modify_file",
-                      targetPath: activeFilePath,
-                      actionDescription: "Apply AI code modification",
-                      replacementCode: rawCandidateText,
-                    };
-                  } else {
-                    parsedJsonResponse = {
-                      message: rawCandidateText,
-                      actionType: "none",
-                      targetPath: activeFilePath,
-                      actionDescription: "",
-                      replacementCode: "",
-                    };
+                  } catch (e2: any) {
+                    parseError = e2;
+                    console.warn("[Copilot API] Failed to parse extracted inner JSON block:", e2.message);
                   }
                 }
               }
 
+              if (parseError) {
+                const isJsonLike = rawCandidateText.trim().startsWith("{") || rawCandidateText.includes("replacementCode") || rawCandidateText.includes('"message"');
+                if (isJsonLike && loopCounter < maxLoopLimit) {
+                  console.warn("[Copilot API] JSON parsing failed on AI candidate text. Retrying with error message fed back to AI model...", parseError.message);
+                  sendChunk({
+                    type: "thought",
+                    text: `✕ AI JSON format error (${parseError.message}). Retrying AI response generation...`,
+                  });
+                  conversationHistory.push({
+                    role: "model",
+                    parts: [{ text: rawCandidateText }],
+                  });
+                  conversationHistory.push({
+                    role: "user",
+                    parts: [
+                      {
+                        text: `[JSON FORMAT ERROR]: Your previous response failed to parse as valid JSON: ${parseError.message}. Please output ONLY a valid JSON object matching the required schema with proper string escaping.`,
+                      },
+                    ],
+                  });
+                  isDone = false;
+                  continue;
+                }
+
+                console.warn("[Copilot API] Failed to parse response as JSON, falling back to plaintext response");
+                const containsLatex = rawCandidateText.includes("\\") || rawCandidateText.includes("{") || rawCandidateText.includes("}");
+                if (containsLatex && activeFilePath) {
+                  parsedJsonResponse = {
+                    message: "Generated update:",
+                    actionType: "modify_file",
+                    targetPath: activeFilePath,
+                    actionDescription: "Apply AI code modification",
+                    replacementCode: rawCandidateText,
+                  };
+                } else {
+                  parsedJsonResponse = {
+                    message: rawCandidateText,
+                    actionType: "none",
+                    targetPath: activeFilePath,
+                    actionDescription: "",
+                    replacementCode: "",
+                  };
+                }
+              }
+
+              isDone = true;
               finalResponseData = parsedJsonResponse;
               sendChunk({ type: "final", response: parsedJsonResponse });
             }
