@@ -511,8 +511,18 @@ export interface Segment {
   hunkId?: string;
 }
 
-export function parseDiff(original: string, proposed: string) {
-  const changes = diffLines(original, proposed);
+export function parseDiff(original: string, proposed: string): { segments: Segment[]; hunks: DiffHunk[] } {
+  const normalizedOriginal = (original || "").replace(/\r\n/g, "\n").trimEnd();
+  const normalizedProposed = (proposed || "").replace(/\r\n/g, "\n").trimEnd();
+
+  if (normalizedOriginal === normalizedProposed) {
+    return {
+      segments: [{ type: "unchanged" as const, lines: normalizedProposed ? normalizedProposed.split("\n") : [] }],
+      hunks: [],
+    };
+  }
+
+  const changes = diffLines(normalizedOriginal, normalizedProposed);
   const segments: Segment[] = [];
   const hunks: DiffHunk[] = [];
   let hunkCounter = 0;
@@ -524,6 +534,9 @@ export function parseDiff(original: string, proposed: string) {
     const changeLines = change.value.replace(/\r/g, "").split("\n");
     if (changeLines.length > 1 && changeLines[changeLines.length - 1] === "") {
       changeLines.pop();
+    }
+    if (changeLines.length === 1 && changeLines[0] === "" && (change.added || change.removed)) {
+      continue;
     }
 
     if (!change.added && !change.removed) {

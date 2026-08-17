@@ -5,7 +5,7 @@ import ThemeToggle from "./ThemeToggle";
 import UserStatus from "./UserStatus";
 import ProjectsList from "./ProjectsList";
 import ProjectTree from "./ProjectTree";
-import Editor from "./Editor";
+import Editor, { parseDiff } from "./Editor";
 import VersionHistory from "./VersionHistory";
 import CopilotDrawer from "./CopilotDrawer";
 
@@ -1147,32 +1147,51 @@ export default function AppShell() {
   const handleAcceptDiffHunk = useCallback(async (committedContent: string, remainingModified: string) => {
     if (!project || !selectedFile) return;
     await handleSaveFile(committedContent);
-    setPendingDiff({
-      original: committedContent,
-      modified: remainingModified,
-      filePath: selectedFile,
-    });
-    currentContent.current = remainingModified;
-    scheduleAutoCompile();
-  }, [project, selectedFile, handleSaveFile, scheduleAutoCompile]);
+
+    const { hunks: remainingHunks } = parseDiff(committedContent, remainingModified);
+    if (remainingHunks.length === 0 || committedContent.trim() === remainingModified.trim()) {
+      setPendingDiff(null);
+      currentContent.current = committedContent;
+      scheduleAutoCompile();
+      submitDiffApproval("approve", { message: "All diff hunks accepted by user in Monaco editor." });
+    } else {
+      setPendingDiff({
+        original: committedContent,
+        modified: remainingModified,
+        filePath: selectedFile,
+      });
+      currentContent.current = remainingModified;
+      scheduleAutoCompile();
+    }
+  }, [project, selectedFile, handleSaveFile, scheduleAutoCompile, submitDiffApproval]);
 
   const handleRejectDiffHunk = useCallback((newEditorText: string) => {
     if (!selectedFile) return;
-    setPendingDiff({
-      original: fileContent,
-      modified: newEditorText,
-      filePath: selectedFile,
-    });
-    currentContent.current = newEditorText;
-    scheduleAutoCompile();
-  }, [selectedFile, fileContent, scheduleAutoCompile]);
+    const { hunks: remainingHunks } = parseDiff(fileContent, newEditorText);
+    if (remainingHunks.length === 0 || fileContent.trim() === newEditorText.trim()) {
+      setPendingDiff(null);
+      currentContent.current = fileContent;
+      scheduleAutoCompile();
+      submitDiffApproval("reject", { message: "Diff hunks rejected by user in Monaco editor." });
+    } else {
+      setPendingDiff({
+        original: fileContent,
+        modified: newEditorText,
+        filePath: selectedFile,
+      });
+      currentContent.current = newEditorText;
+      scheduleAutoCompile();
+    }
+  }, [selectedFile, fileContent, scheduleAutoCompile, submitDiffApproval]);
 
   const handleAcceptAllDiffs = useCallback(async (acceptedContent: string) => {
     if (!project || !selectedFile) return;
     await handleSaveFile(acceptedContent);
     setPendingDiff(null);
+    currentContent.current = acceptedContent;
+    scheduleAutoCompile();
     submitDiffApproval("approve", { message: "User accepted diff hunks in Monaco editor." });
-  }, [project, selectedFile, handleSaveFile, submitDiffApproval]);
+  }, [project, selectedFile, handleSaveFile, scheduleAutoCompile, submitDiffApproval]);
 
   const handleDiscardAllDiffs = useCallback(() => {
     setPendingDiff(null);
