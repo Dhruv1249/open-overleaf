@@ -26,7 +26,7 @@ export interface CopilotResponsePayload {
   error?: string;
 }
 
-const pendingApprovals = new Map<string, "pending" | "approved" | "rejected">();
+const pendingApprovals = new Map<string, "pending" | "approved" | "rejected" | { status: "approved" | "rejected"; details?: any }>();
 
 const functionDeclarations = [
   {
@@ -61,7 +61,18 @@ const functionDeclarations = [
       required: ["projectName", "filePath"]
     }
   },
-
+  {
+    name: "create_file",
+    description: "Creates a new empty file in the LaTeX project.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        filePath: { type: "STRING", description: "Relative file path to create, e.g. helper_notes.tex" }
+      },
+      required: ["projectName", "filePath"]
+    }
+  },
   {
     name: "delete_file",
     description: "Deletes a specific file or folder inside a target project on GitHub. Requires user approval.",
@@ -249,18 +260,6 @@ const functionDeclarations = [
       },
       required: ["projectName"]
     }
-  },
-  {
-    name: "sync_to_drive",
-    description: "Synchronizes the compiled PDF of the project to Google Drive.",
-    parameters: {
-      type: "OBJECT",
-      properties: {
-        projectName: { type: "STRING", description: "Name of the LaTeX project" },
-        mainFile: { type: "STRING", description: "The main .tex file name to identify compiled PDF" }
-      },
-      required: ["projectName"]
-    }
   }
 ];
 
@@ -390,6 +389,29 @@ function parseLaxJson(str: string): any {
   return JSON.parse(fixed);
 }
 
+/**
+ * Sanitizes objects for logging by redacting tokens and truncating large base64 buffers.
+ */
+function sanitizeForLog(obj: any): any {
+  if (!obj || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(sanitizeForLog);
+  const copy: Record<string, any> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (k.toLowerCase().includes("token") || k.toLowerCase().includes("secret") || k.toLowerCase().includes("auth")) {
+      copy[k] = "[REDACTED]";
+    } else if (k === "base64Data" && typeof v === "string") {
+      copy[k] = `[base64 image: ${Math.round(v.length / 1024)} KB]`;
+    } else if (typeof v === "string" && v.length > 500) {
+      copy[k] = `${v.slice(0, 200)}... [truncated ${v.length} chars]`;
+    } else if (typeof v === "object" && v !== null) {
+      copy[k] = sanitizeForLog(v);
+    } else {
+      copy[k] = v;
+    }
+  }
+  return copy;
+}
+
 const modelsCascade = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
@@ -407,7 +429,7 @@ async function fetchGeminiWithFallback(
     const modelName = modelsCascade[modelIndex];
     const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-    console.log(`[Gemini API] Calling ${modelName} with payload:`, JSON.stringify(payload));
+    console.log(`[Gemini API] Calling ${modelName} (turns: ${payload?.contents?.length || 0})`);
 
     try {
       const response = await fetch(targetGeminiEndpoint, {
@@ -428,7 +450,7 @@ async function fetchGeminiWithFallback(
       }
 
       const data = await response.json();
-      console.log(`[Gemini API] Model ${modelName} responded:`, JSON.stringify(data));
+      console.log(`[Gemini API] Model ${modelName} responded (finishReason: ${data?.candidates?.[0]?.finishReason || "unknown"})`);
       return { success: true, data };
     } catch (err: any) {
       console.error(`[Gemini API] Fetch error calling ${modelName}:`, err.message || err);
@@ -451,8 +473,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     const payload: any = await request.json();
     if (payload.action === "approve" || payload.action === "reject") {
-      const { callId, action } = payload;
-      pendingApprovals.set(callId, action === "approve" ? "approved" : "rejected");
+      const { callId, action, details } = payload;
+      if (callId === "pending-diff" || !callId) {
+        for (const [key, val] of pendingApprovals.entries()) {
+          if (val === "pending") {
+            pendingApprovals.set(key, {
+              status: action === "approve" ? "approved" : "rejected",
+              details: details || null,
+            });
+          }
+        }
+      } else {
+        pendingApprovals.set(callId, {
+          status: action === "approve" ? "approved" : "rejected",
+          details: details || null,
+        });
+      }
       return NextResponse.json({ success: true });
     }
 
@@ -523,7 +559,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     compiledContextPrompt += `1. Respond directly without calling tools if the user is greeting you, saying hello, asking a general question, or the request does not require filesystem/compilation actions.\n`;
     compiledContextPrompt += `2. Only call tools if they are strictly necessary to perform or answer the user request.\n`;
     compiledContextPrompt += `3. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.\n`;
-    compiledContextPrompt += `4. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.\n\n`;
+    compiledContextPrompt += `4. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.\n`;
+    compiledContextPrompt += `5. If the user request contains a multi-step checklist or task pipeline, systematically execute EVERY single step in order without skipping intermediate file creation, renaming, deletion, patching, or inspection actions.\n\n`;
 
     if (selectedTextSnippet) {
       compiledContextPrompt += `User Highlighted Selection:\n\`\`\`latex\n${selectedTextSnippet}\n\`\`\`\n`;
@@ -551,6 +588,24 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           text: `You are an expert LaTeX Copilot AI Assistant inside Open-Overleaf.
 Your goal is to assist the user with editing and compiling LaTeX documents.
 
+AVAILABLE MCP TOOLS:
+- list_projects: Lists all LaTeX projects in open-overleaf.
+- list_files: Lists files and directory structure in the current project.
+- search_in_project: Searches for text patterns across project files.
+- read_project_file: Reads the complete text of an existing file.
+- read_file_lines: Reads specific line ranges [startLine, endLine] from an existing file.
+- create_file: Creates a new empty file in the project. (To add code or content to it, call apply_patch immediately after).
+- apply_patch: Surgically replaces targeted lines or adds content into an existing file using diff chunks (mounted in Monaco for user hunk review).
+- rename_file: Renames or moves an existing file.
+- delete_file: Deletes an existing file from the project.
+- validate_tex: Runs chktex linter to inspect syntax and diagnostics.
+- get_file_history: Fetches git commit history for a file.
+- get_file_at_revision: Inspects file content at a specific git SHA commit.
+- update_project_settings: Updates project configuration (compiler engine, main entry file).
+- compile_project: Runs LaTeX compilation and returns diagnostics and log.
+- get_project_pdf: Compiles (if needed) and fetches compiled PDF binary metadata + compilation logs.
+- get_project_preview_image: Compiles (if needed) and renders a PDF page to PNG for visual layout inspection + compilation logs.
+
 CRITICAL GUIDELINES:
 1. Respond directly without calling any tools if the user is greeting you (e.g. "hello", "hi"), saying hello, asking a general question, or if the request does not require filesystem or compilation actions.
 2. ONLY call tools if they are strictly necessary to perform the filesystem or compilation actions requested by the user.
@@ -561,12 +616,14 @@ CRITICAL GUIDELINES:
 7. Only use 'compile_project' when the user explicitly asks you to compile, build, preview, or run compilation on the project.
 8. If you want to check what files are inside the project, call 'list_files' once. Do not call it repeatedly.
 9. If a compilation fails, DO NOT call 'compile_project' again until you have modified a file using 'apply_patch' to attempt to fix the error.
-10. Use 'apply_patch' when you need to make targeted line-level modifications to a file. Do NOT try to overwrite files; always use surgical patches.
-11. Use 'get_file_history' and 'get_file_at_revision' to inspect past commits/versions of a file when the user asks to see history, revert a change, or when you need to understand how a recent update broke the compilation.
-12. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
-13. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.
-14. If returning 'modify_file' in the final JSON response without a highlighted text selection, 'replacementCode' MUST be the COMPLETE, full-file LaTeX document content including preamble, \\documentclass, packages, and \\begin{document}...\\end{document}. NEVER return an isolated snippet in 'replacementCode' for full-file modifications.
-15. When the user asks to look at, review, or inspect the visual appearance or layout of the PDF, call 'get_project_preview_image' to inspect the rendered page visually.`
+10. Use 'create_file' to create any new empty file in the project. Then use 'apply_patch' to add content to it.
+11. Use 'apply_patch' when you need to make targeted line-level modifications or add content to an existing file. Always use surgical patches.
+12. Use 'get_file_history' and 'get_file_at_revision' to inspect past commits/versions of a file when the user asks to see history, revert a change, or when you need to understand how a recent update broke the compilation.
+13. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
+14. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.
+15. If returning 'modify_file' in the final JSON response without a highlighted text selection, 'replacementCode' MUST be the COMPLETE, full-file LaTeX document content including preamble, \\documentclass, packages, and \\begin{document}...\\end{document}. NEVER return an isolated snippet in 'replacementCode' for full-file modifications.
+16. When the user asks to look at, review, or inspect the visual appearance or layout of the PDF, call 'get_project_preview_image' to inspect the rendered page visually.
+17. When the user provides a multi-step checklist or task pipeline, you MUST execute ALL requested steps in exact sequence without skipping intermediate file creation, renaming, deletion, patching, or inspection steps.`
         }
       ]
     };
@@ -693,38 +750,69 @@ CRITICAL GUIDELINES:
                       githubToken: userAccessToken || toolArgs?.githubToken,
                     };
 
-                    const approvalRequiredTools = ["delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
+                    const approvalRequiredTools = [
+                      "apply_patch",
+                      "create_file",
+                      "delete_file",
+                      "rename_file",
+                      "update_project_settings",
+                    ];
                     const requiresApproval = approvalRequiredTools.includes(toolName);
+                    let approvalRecord: any = null;
 
                     if (requiresApproval) {
                       sendChunk({ type: "tool_approval_required", id: callId, name: toolName, arguments: toolArgs });
                       pendingApprovals.set(callId, "pending");
 
                       const startTime = Date.now();
-                      let approved = false;
-                      while (Date.now() - startTime < 60000) {
+                      const isPatchEdit = toolName === "apply_patch";
+                      const approvalTimeoutMs = isPatchEdit ? 24 * 60 * 60 * 1000 : 10 * 60 * 1000;
+
+                      while (Date.now() - startTime < approvalTimeoutMs) {
                         await new Promise((resolve) => setTimeout(resolve, 500));
-                        const status = pendingApprovals.get(callId);
-                        if (status === "approved") {
-                          approved = true;
-                          break;
-                        }
-                        if (status === "rejected") {
+                        const currentVal = pendingApprovals.get(callId);
+                        if (currentVal && typeof currentVal === "object" && (currentVal.status === "approved" || currentVal.status === "rejected")) {
+                          approvalRecord = currentVal;
                           break;
                         }
                       }
 
                       pendingApprovals.delete(callId);
 
-                      if (!approved) {
-                        throw new Error(`Tool execution for '${toolName}' was rejected by the user or timed out.`);
+                      if (approvalRecord?.status === "rejected") {
+                        const rejectDetails = approvalRecord?.details;
+                        toolResult = {
+                          rejectedByUser: true,
+                          message: rejectDetails?.message || `The user reviewed and rejected the proposed changes for '${toolName}'.`,
+                          acceptedHunksCount: rejectDetails?.acceptedCount ?? 0,
+                          rejectedHunksCount: rejectDetails?.rejectedCount ?? 1,
+                        };
+                        sendChunk({
+                          type: "tool_result",
+                          id: callId,
+                          name: toolName,
+                          success: false,
+                          rejectedByUser: true,
+                          result: toolResult,
+                          arguments: toolArgs,
+                        });
+                      } else if (approvalRecord?.status !== "approved") {
+                        throw new Error(`Tool execution for '${toolName}' timed out waiting for user approval.`);
                       }
                     }
 
-                    console.log("[Copilot API] Executing tool:", toolName, "args:", JSON.stringify(finalArgs));
-                    toolResult = await callLocalMCPTool(toolName, finalArgs);
-                    console.log("[Copilot API] Tool execution succeeded:", toolName, "result:", JSON.stringify(toolResult));
-                    sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult, arguments: toolArgs });
+                    if (!toolResult) {
+                      console.log("[Copilot API] Executing tool:", toolName, "args:", JSON.stringify(sanitizeForLog(finalArgs)));
+                      toolResult = await callLocalMCPTool(toolName, finalArgs);
+                      if (requiresApproval && approvalRecord?.details) {
+                        toolResult = {
+                          ...toolResult,
+                          reviewDetails: approvalRecord.details,
+                        };
+                      }
+                      console.log("[Copilot API] Tool execution succeeded:", toolName, "result:", JSON.stringify(sanitizeForLog(toolResult)));
+                      sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult, arguments: toolArgs });
+                    }
                   } catch (err: any) {
                     console.error("[Copilot API] Tool execution failed:", toolName, "error:", err.message || err);
                     sendChunk({ type: "tool_result", id: callId, name: toolName, success: false, error: err.message });

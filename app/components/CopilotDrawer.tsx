@@ -14,6 +14,9 @@ export interface ChatMessageItem {
   isError?: boolean;
   isToolCall?: boolean;
   toolStatus?: "running" | "success" | "failed";
+  toolName?: string;
+  toolArguments?: any;
+  toolError?: string;
   isThought?: boolean;
 }
 
@@ -33,6 +36,123 @@ export interface CopilotDrawerProps {
   projectName?: string;
   onRefreshTree?: () => void;
   onOpenFile?: (filePath: string) => void;
+}
+
+/**
+ * Formats tool execution events and arguments into human-readable action summaries.
+ */
+export function formatToolDescription(
+  toolName: string,
+  args: any,
+  status: "running" | "success" | "failed",
+  error?: string
+): string {
+  const filePath = args?.filePath || args?.targetPath || args?.path;
+  const pageNumber = args?.pageNumber;
+  const oldPath = args?.oldPath;
+  const newPath = args?.newPath;
+  const sha = args?.sha;
+
+  if (status === "failed") {
+    const errorSuffix = error ? `: ${error}` : "";
+    switch (toolName) {
+      case "read_project_file":
+      case "read_file_lines":
+        return `✕ Failed reading ${filePath || "file"}${errorSuffix}`;
+      case "create_file":
+        return `✕ Failed creating file ${filePath || "file"}${errorSuffix}`;
+      case "write_project_file":
+        return `✕ Failed writing ${filePath || "file"}${errorSuffix}`;
+      case "apply_patch":
+        return `✕ Failed editing ${filePath || "file"}${errorSuffix}`;
+      case "compile_project":
+        return `✕ Failed compiling project${errorSuffix}`;
+      case "list_files":
+        return `✕ Failed listing project files${errorSuffix}`;
+      case "get_project_preview_image":
+        return `✕ Failed rendering preview${pageNumber ? ` (p. ${pageNumber})` : ""}${errorSuffix}`;
+      case "get_project_pdf":
+        return `✕ Failed fetching project PDF${errorSuffix}`;
+      case "delete_file":
+        return `✕ Failed deleting ${filePath || "file"}${errorSuffix}`;
+      case "rename_file":
+        return `✕ Failed renaming ${oldPath || "file"}${errorSuffix}`;
+      case "get_file_history":
+        return `✕ Failed fetching history for ${filePath || "file"}${errorSuffix}`;
+      case "get_file_at_revision":
+        return `✕ Failed reading ${filePath || "file"} @ ${sha ? sha.slice(0, 7) : "revision"}${errorSuffix}`;
+      case "sync_to_drive":
+        return `✕ Failed syncing PDF to Google Drive${errorSuffix}`;
+      default:
+        return `✕ Failed ${toolName}${errorSuffix}`;
+    }
+  }
+
+  if (status === "success") {
+    switch (toolName) {
+      case "read_project_file":
+      case "read_file_lines":
+        return `✓ Read ${filePath || "file"}`;
+      case "create_file":
+        return `✓ Created empty file ${filePath || "file"}`;
+      case "write_project_file":
+        return `✓ Wrote ${filePath || "file"}`;
+      case "apply_patch":
+        return `✓ Edited ${filePath || "file"}`;
+      case "compile_project":
+        return `✓ Compiled project`;
+      case "list_files":
+        return `✓ Listed project files`;
+      case "get_project_preview_image":
+        return `✓ Rendered preview${pageNumber ? ` (p. ${pageNumber})` : ""}`;
+      case "get_project_pdf":
+        return `✓ Fetched project PDF`;
+      case "delete_file":
+        return `✓ Deleted ${filePath || "file"}`;
+      case "rename_file":
+        return `✓ Renamed ${oldPath || "file"} to ${newPath || "new file"}`;
+      case "get_file_history":
+        return `✓ Fetched history for ${filePath || "file"}`;
+      case "get_file_at_revision":
+        return `✓ Read ${filePath || "file"} @ ${sha ? sha.slice(0, 7) : "revision"}`;
+      case "sync_to_drive":
+        return `✓ Synced PDF to Google Drive`;
+      default:
+        return `✓ Completed ${toolName}`;
+    }
+  }
+
+  switch (toolName) {
+    case "read_project_file":
+    case "read_file_lines":
+      return `Reading ${filePath || "file"}...`;
+    case "create_file":
+      return `Creating empty file ${filePath || "file"}...`;
+    case "write_project_file":
+      return `Writing ${filePath || "file"}...`;
+    case "apply_patch":
+      return `Editing ${filePath || "file"}...`;
+    case "compile_project":
+      return `Compiling project...`;
+    case "list_files":
+      return `Listing project files...`;
+    case "get_project_preview_image":
+      return `Rendering preview${pageNumber ? ` (p. ${pageNumber})` : ""}...`;
+    case "get_project_pdf":
+      return `Fetching project PDF...`;
+    case "delete_file":
+      return `Deleting ${filePath || "file"}...`;
+    case "rename_file":
+      return `Renaming ${oldPath || "file"} to ${newPath || "new file"}...`;
+    case "get_file_history":
+      return `Fetching history for ${filePath || "file"}...`;
+    case "get_file_at_revision":
+      return `Reading ${filePath || "file"} @ ${sha ? sha.slice(0, 7) : "revision"}...`;
+    case "sync_to_drive":
+      return `Syncing PDF to Google Drive...`;
+    default:
+      return `Running ${toolName}...`;
+  }
 }
 
 export default function CopilotDrawer({
@@ -239,52 +359,81 @@ export default function CopilotDrawer({
                 },
               ]);
             } else if (chunk.type === "tool_start") {
+              const toolDescription = formatToolDescription(chunk.name, chunk.arguments, "running");
               setActiveTools((prev) => {
-                if (prev.includes(chunk.name)) return prev;
-                return [...prev, chunk.name];
+                if (prev.includes(toolDescription)) return prev;
+                return [...prev, toolDescription];
               });
               setMessagesList((prev) => [
                 ...prev,
                 {
                   id: chunk.id,
                   sender: "copilot",
-                  text: `Running ${chunk.name}${chunk.arguments ? `(${JSON.stringify(chunk.arguments)})` : ""}...`,
+                  text: toolDescription,
                   isToolCall: true,
                   toolStatus: "running",
+                  toolName: chunk.name,
+                  toolArguments: chunk.arguments,
                 },
               ]);
             } else if (chunk.type === "tool_approval_required") {
+              const toolDescription = formatToolDescription(chunk.name, chunk.arguments, "running");
+              const isEdit = chunk.name === "apply_patch";
+              let previewReplacement: string | undefined = undefined;
+
+              if (chunk.name === "apply_patch" && Array.isArray(chunk.arguments?.patches)) {
+                const targetPath = chunk.arguments?.filePath || activeFilePath;
+                if (onOpenFile && targetPath) {
+                  onOpenFile(targetPath);
+                }
+                const originalFileText = fileContextsRecord[targetPath] || (targetPath === activeFilePath ? fullFileContent : "");
+                if (originalFileText !== undefined) {
+                  const lines = originalFileText.split("\n");
+                  const sortedPatches = [...chunk.arguments.patches].sort((a: any, b: any) => b.startLine - a.startLine);
+                  for (const patch of sortedPatches) {
+                    const startIdx = Math.max(0, patch.startLine - 1);
+                    const deleteCount = Math.max(0, patch.endLine - patch.startLine + 1);
+                    const replacementLines = patch.newContent.split("\n");
+                    lines.splice(startIdx, deleteCount, ...replacementLines);
+                  }
+                  previewReplacement = lines.join("\n");
+                  onApplyCode(previewReplacement, false, targetPath);
+                }
+              }
+
               setMessagesList((prev) => [
                 ...prev,
                 {
                   id: chunk.id,
                   sender: "copilot",
-                  text: `Tool '${chunk.name}' requires your approval to run.`,
+                  text: `Approval required: ${toolDescription}`,
                   isToolCall: true,
                   toolStatus: "running",
+                  toolName: chunk.name,
+                  toolArguments: chunk.arguments,
                   approvalStatus: "pending",
-                  actionType: "delete_file",
-                  targetPath: chunk.name,
-                  actionDescription: `Arguments: ${JSON.stringify(chunk.arguments)}`,
+                  actionType: isEdit ? "modify_file" : "delete_file",
+                  targetPath: chunk.arguments?.filePath || chunk.arguments?.targetPath || chunk.name,
+                  actionDescription: isEdit
+                    ? "Review proposed diff hunks in editor. Accept or reject individual hunks or use the actions below:"
+                    : toolDescription,
+                  replacementCode: isEdit ? undefined : previewReplacement,
                 },
               ]);
             } else if (chunk.type === "tool_result") {
-              setActiveTools((prev) => prev.filter((t) => t !== chunk.name));
+              const runningDescription = formatToolDescription(chunk.name, chunk.arguments, "running");
+              const finalDescription = formatToolDescription(
+                chunk.name,
+                chunk.arguments,
+                chunk.success ? "success" : "failed",
+                chunk.error
+              );
+              setActiveTools((prev) => prev.filter((t) => t !== runningDescription && t !== chunk.name));
               if (chunk.success) {
-                if (onRefreshTree && ["apply_patch", "delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
+                if (onRefreshTree && ["create_file", "apply_patch", "delete_file", "rename_file", "update_project_settings"].includes(chunk.name)) {
                   onRefreshTree();
                 }
-                if (chunk.name === "apply_patch") {
-                  const patchedPath = chunk.arguments?.filePath;
-                  const originalContent: string | undefined = chunk.result?.originalContent;
-                  const updatedContent: string | undefined = chunk.result?.updatedContent;
-                  if (patchedPath && originalContent !== undefined && updatedContent !== undefined) {
-                    if (onOpenFile) onOpenFile(patchedPath);
-                    onApplyCode(updatedContent, false, patchedPath);
-                  } else if (patchedPath && onOpenFile) {
-                    onOpenFile(patchedPath);
-                  }
-                } else if (["write_project_file", "rename_file"].includes(chunk.name) && onOpenFile) {
+                if (["create_file", "rename_file"].includes(chunk.name) && onOpenFile) {
                   const patchedPath = chunk.arguments?.filePath ?? chunk.arguments?.targetPath ?? chunk.arguments?.newPath;
                   if (patchedPath) onOpenFile(patchedPath);
                 }
@@ -294,10 +443,11 @@ export default function CopilotDrawer({
                   if (item.id === chunk.id) {
                     return {
                       ...item,
-                      text: chunk.success
-                        ? `✓ Completed ${chunk.name}`
-                        : `✕ Failed ${chunk.name}: ${chunk.error}`,
+                      text: finalDescription,
                       toolStatus: chunk.success ? "success" : "failed",
+                      toolName: chunk.name || item.toolName,
+                      toolArguments: chunk.arguments || item.toolArguments,
+                      toolError: chunk.error,
                       isError: !chunk.success,
                     };
                   }
@@ -357,25 +507,25 @@ export default function CopilotDrawer({
     }
   };
 
-  const submitApproval = async (callId: string, action: "approve" | "reject") => {
+  const submitApproval = async (callId: string, action: "approve" | "reject", details?: any) => {
     try {
       await fetch("/api/copilot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, callId }),
+        body: JSON.stringify({ action, callId, details }),
       });
     } catch (err) {}
   };
 
-  const handleApproveAction = (messageId: string) => {
-    submitApproval(messageId, "approve");
+  const handleApproveAction = (messageId: string, customDetails?: any) => {
+    submitApproval(messageId, "approve", customDetails);
     setMessagesList((previousList) =>
       previousList.map((item) => {
         if (item.id === messageId) {
           if (item.actionType === "modify_file" && item.replacementCode) {
             onApplyCode(item.replacementCode, Boolean(selectedText), item.targetPath || activeFilePath);
           } else if (item.actionType === "delete_file" && item.targetPath && onDeleteFile) {
-            const mcpTools = ["delete_file", "rename_file", "update_project_settings", "sync_to_drive"];
+            const mcpTools = ["apply_patch", "create_file", "write_project_file", "delete_file", "rename_file", "update_project_settings"];
             if (!mcpTools.includes(item.targetPath)) {
               onDeleteFile(item.targetPath);
             }
@@ -387,8 +537,8 @@ export default function CopilotDrawer({
     );
   };
 
-  const handleRejectAction = (messageId: string) => {
-    submitApproval(messageId, "reject");
+  const handleRejectAction = (messageId: string, customDetails?: any) => {
+    submitApproval(messageId, "reject", customDetails);
     setMessagesList((previousList) =>
       previousList.map((item) => {
         if (item.id === messageId) {
@@ -554,13 +704,32 @@ export default function CopilotDrawer({
               )}
               <p className="whitespace-pre-wrap leading-relaxed">{messageItem.text}</p>
 
+              {messageItem.isToolCall && messageItem.toolStatus === "failed" && (
+                <div className="mt-2 p-2 bg-rose-950/60 border border-rose-800/60 rounded text-[11px] space-y-1 text-left font-sans">
+                  <div className="flex items-center justify-between text-rose-300 font-medium">
+                    <span>Tool: <code className="font-mono text-rose-200 bg-rose-900/40 px-1 py-0.5 rounded">{messageItem.toolName || "tool"}</code></span>
+                    {messageItem.targetPath && <span className="font-mono text-[10px] text-zinc-400">{messageItem.targetPath}</span>}
+                  </div>
+                  {messageItem.toolArguments && Object.keys(messageItem.toolArguments).length > 0 && (
+                    <div className="text-zinc-400 font-mono text-[9px] bg-zinc-900/80 p-1.5 rounded border border-zinc-800 break-all">
+                      {JSON.stringify(messageItem.toolArguments)}
+                    </div>
+                  )}
+                  {messageItem.toolError && (
+                    <div className="text-rose-300 font-mono text-[10px] bg-rose-950/80 p-1.5 rounded border border-rose-900/60 break-all whitespace-pre-wrap">
+                      {messageItem.toolError}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {messageItem.replacementCode && (
                 <div className="mt-2 bg-zinc-950 p-2 rounded border border-zinc-800 font-mono text-[10px] overflow-x-auto panel-scroll max-h-36">
                   <pre className="text-emerald-400 whitespace-pre-wrap">{messageItem.replacementCode}</pre>
                 </div>
               )}
 
-              {messageItem.approvalStatus === "pending" && (
+              {messageItem.approvalStatus === "pending" && messageItem.actionType !== "modify_file" && (
                 <div className="mt-2.5 p-2 bg-amber-950/60 border border-amber-800/60 rounded space-y-2">
                   <div className="flex items-center justify-between text-[11px] text-amber-200">
                     <span className="font-semibold">Approval Required</span>
@@ -572,7 +741,7 @@ export default function CopilotDrawer({
                       onClick={() => handleApproveAction(messageItem.id)}
                       className="flex-1 bg-emerald-600 hover:bg-emerald-500 text-white py-1 rounded text-[11px] font-medium transition-colors"
                     >
-                      Approve & Apply
+                      Approve
                     </button>
                     <button
                       onClick={() => handleRejectAction(messageItem.id)}
@@ -584,15 +753,15 @@ export default function CopilotDrawer({
                 </div>
               )}
 
-              {messageItem.approvalStatus === "approved" && (
+              {messageItem.approvalStatus === "approved" && messageItem.actionType !== "modify_file" && (
                 <div className="mt-2 text-[10px] text-emerald-400 font-medium">
-                  Action Approved & Applied
+                  ✓ Approved
                 </div>
               )}
 
-              {messageItem.approvalStatus === "rejected" && (
+              {messageItem.approvalStatus === "rejected" && messageItem.actionType !== "modify_file" && (
                 <div className="mt-2 text-[10px] text-zinc-400 font-medium">
-                  Action Rejected
+                  ✕ Rejected
                 </div>
               )}
             </div>
@@ -600,7 +769,7 @@ export default function CopilotDrawer({
         ))}
         {activeTools.length > 0 && (
           <div className="flex items-center gap-2 p-2 bg-zinc-800/60 border border-zinc-700/50 rounded text-[11px] text-zinc-300 animate-pulse">
-            <span>Running tools: {activeTools.join(", ")}...</span>
+            <span>{activeTools.join(" · ")}</span>
           </div>
         )}
         <div ref={chatBottomRef} />

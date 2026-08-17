@@ -360,17 +360,47 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     };
   }
 
+  if (name === "create_file") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    if (!userGhToken) throw new Error("create_file requires a githubToken");
+    await syncWithWebUIAPI(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectName)}/file`,
+      { path: filePath, content: "" },
+      userGhToken
+    );
+    return { message: `Successfully created empty file ${filePath} in project ${projectName}` };
+  }
+
   if (name === "get_project_pdf") {
     const projectName = String(toolArguments?.projectName);
     const pdfFilename = String(toolArguments?.pdfName || "main.pdf");
     const texName = pdfFilename.replace(/\.pdf$/i, ".tex");
-    const pdfResponse = await fetch(
+    let compileResult: any = null;
+
+    let pdfResponse = await fetch(
       `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`,
       { headers: { Cookie: getSystemAuthCookie(userGhToken) } }
     );
+
     if (!pdfResponse.ok) {
-      throw new Error(`PDF not found for project ${projectName} — compile first`);
+      compileResult = await syncWithWebUIAPI(
+        "POST",
+        `/api/projects/${encodeURIComponent(projectName)}/compile`,
+        { mainFile: texName },
+        userGhToken
+      );
+      pdfResponse = await fetch(
+        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`,
+        { headers: { Cookie: getSystemAuthCookie(userGhToken) } }
+      );
     }
+
+    if (!pdfResponse.ok) {
+      throw new Error(`PDF compilation failed for project ${projectName}: ${compileResult?.log || "PDF not found"}`);
+    }
+
     const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
     const base64DataString = pdfBuffer.toString("base64");
 
@@ -389,6 +419,10 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       pageCount: totalPages,
       base64Data: base64DataString,
       sizeBytes: pdfBuffer.length,
+      compilationStatus: compileResult ? (compileResult.ok ? "compiled" : "failed") : "cached",
+      errorCount: compileResult?.errors ?? 0,
+      warningCount: compileResult?.warnings ?? 0,
+      log: compileResult?.log ?? "",
     };
   }
 
@@ -397,10 +431,21 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const pdfFilename = String(toolArguments?.pdfName || "main.pdf");
     const targetPageNumber = parseInt(toolArguments?.pageNumber || "1", 10);
     const resolutionDPI = parseInt(toolArguments?.dpi || "150", 10);
+    const texName = pdfFilename.replace(/\.pdf$/i, ".tex");
+    let compileResult: any = null;
 
     const pdfFullPath = path.join("/tmp/oo-compile", projectName, pdfFilename);
     if (!fs.existsSync(pdfFullPath)) {
-      throw new Error(`PDF artifact not found: ${pdfFilename} in project ${projectName} — compile first`);
+      compileResult = await syncWithWebUIAPI(
+        "POST",
+        `/api/projects/${encodeURIComponent(projectName)}/compile`,
+        { mainFile: texName },
+        userGhToken
+      );
+    }
+
+    if (!fs.existsSync(pdfFullPath)) {
+      throw new Error(`Failed to compile or find PDF ${pdfFilename} in project ${projectName}: ${compileResult?.log || ""}`);
     }
 
     const temporaryOutputPrefix = path.join("/tmp/oo-compile", projectName, `preview_p${targetPageNumber}`);
@@ -419,7 +464,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const imageBuffer = fs.readFileSync(finalPngPath);
     const imageBase64String = imageBuffer.toString("base64");
 
-    fs.unlinkSync(finalPngPath);
+    try { fs.unlinkSync(finalPngPath); } catch {}
 
     return {
       fileName: `${path.basename(pdfFilename, ".pdf")}_p${targetPageNumber}.png`,
@@ -427,10 +472,12 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       pageNumber: targetPageNumber,
       base64Data: imageBase64String,
       sizeBytes: imageBuffer.length,
+      compilationStatus: compileResult ? (compileResult.ok ? "compiled" : "failed") : "cached",
+      errorCount: compileResult?.errors ?? 0,
+      warningCount: compileResult?.warnings ?? 0,
+      log: compileResult?.log ?? "",
     };
   }
-
-
 
   if (name === "rename_file") {
     const projectName = String(toolArguments?.projectName);
@@ -788,6 +835,19 @@ function createMCPServer(): Server {
               githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
             },
             required: ["projectName", "filePath"],
+          },
+        },
+        {
+          name: "create_file",
+          description: "Creates a new empty file in the project. Requires a githubToken.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the project" },
+              filePath: { type: "string", description: "Relative file path to create (e.g. helper_notes.tex)" },
+              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
+            },
+            required: ["projectName", "filePath", "githubToken"],
           },
         },
         {

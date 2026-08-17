@@ -1134,6 +1134,16 @@ export default function AppShell() {
     }
   }, [project, selectedFile]);
 
+  const submitDiffApproval = useCallback(async (action: "approve" | "reject", details?: any) => {
+    try {
+      await fetch("/api/copilot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, callId: "pending-diff", details }),
+      });
+    } catch {}
+  }, []);
+
   const handleAcceptDiffHunk = useCallback(async (committedContent: string, remainingModified: string) => {
     if (!project || !selectedFile) return;
     await handleSaveFile(committedContent);
@@ -1161,13 +1171,15 @@ export default function AppShell() {
     if (!project || !selectedFile) return;
     await handleSaveFile(acceptedContent);
     setPendingDiff(null);
-  }, [project, selectedFile, handleSaveFile]);
+    submitDiffApproval("approve", { message: "User accepted diff hunks in Monaco editor." });
+  }, [project, selectedFile, handleSaveFile, submitDiffApproval]);
 
   const handleDiscardAllDiffs = useCallback(() => {
     setPendingDiff(null);
     currentContent.current = fileContent;
     scheduleAutoCompile();
-  }, [fileContent, scheduleAutoCompile]);
+    submitDiffApproval("reject", { message: "User discarded diff hunks in Monaco editor." });
+  }, [fileContent, scheduleAutoCompile, submitDiffApproval]);
 
   useEffect(() => { saveFileRef.current = handleSaveFile; }, [handleSaveFile]);
 
@@ -1352,7 +1364,20 @@ export default function AppShell() {
                       scheduleAutoCompile();
                     }}
                     projectName={project || undefined}
-                    onRefreshTree={() => setTreeRefreshNonce(n => n + 1)}
+                    onRefreshTree={() => {
+                      setTreeRefreshNonce((nonce) => nonce + 1);
+                      if (project) {
+                        fetch(`/api/projects/${encodeURIComponent(project)}/settings`)
+                          .then((response) => response.json())
+                          .then((data) => {
+                            if (data.ok && data.settings) {
+                              setCompilerSettings((previous) => ({ ...previous, ...data.settings }));
+                              if (data.settings.mainFile) setMainFile(data.settings.mainFile);
+                            }
+                          })
+                          .catch(() => {});
+                      }
+                    }}
                     onOpenFile={handleSelectFile}
                   />
                 </div>
