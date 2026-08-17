@@ -983,31 +983,34 @@ export default function AppShell() {
   // ── Auto-compile: debounce delay based on mode ───────────────────────────
   const scheduleAutoCompile = useCallback(() => {
     const mode = settingsRef.current.mode;
-    if (mode === "manual" || mode === "interval") return;  // don't schedule
-    const delay = mode === "live" ? 500 : 2000;            // live=500ms, debounced=2s
+    if (mode === "manual" || mode === "interval") return;
+    const delay = mode === "live" ? 500 : 2000;
     if (autoCompileTimer.current) clearTimeout(autoCompileTimer.current);
     autoCompileTimer.current = setTimeout(() => {
       const proj = currentProject.current;
       const file = currentFile.current;
-      if (!proj || !file || !file.endsWith(".tex")) return;
+      const mf   = currentMainFile.current || file;
+      if (!proj || !mf) return;
       const s = settingsRef.current;
-      const relFile = file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
-      const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relFile;
-      compile(proj, compileFile, [{ path: relFile, content: currentContent.current }]);
+      const relMf = mf.startsWith(`${proj}/`) ? mf.slice(proj.length + 1) : mf;
+      const relFile = file && file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
+      const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relMf;
+      compile(proj, compileFile, relFile ? [{ path: relFile, content: currentContent.current }] : []);
     }, delay);
   }, [compile]);
 
-  // ── Interval compile (fires every N seconds when mode=interval) ───────────
   useEffect(() => {
     if (compilerSettings.mode !== "interval") return;
     const id = setInterval(() => {
       const proj = currentProject.current;
       const file = currentFile.current;
-      if (!proj || !file || !file.endsWith(".tex")) return;
+      const mf   = currentMainFile.current || file;
+      if (!proj || !mf) return;
       const s = settingsRef.current;
-      const relFile = file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
-      const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relFile;
-      compile(proj, compileFile, [{ path: relFile, content: currentContent.current }]);
+      const relMf = mf.startsWith(`${proj}/`) ? mf.slice(proj.length + 1) : mf;
+      const relFile = file && file.startsWith(`${proj}/`) ? file.slice(proj.length + 1) : file;
+      const compileFile = (s.compileTarget === "root" && s.rootFile) ? s.rootFile : relMf;
+      compile(proj, compileFile, relFile ? [{ path: relFile, content: currentContent.current }] : []);
     }, compilerSettings.intervalSeconds * 1000);
     return () => clearInterval(id);
   }, [compile, compilerSettings.mode, compilerSettings.intervalSeconds]);
@@ -1315,7 +1318,7 @@ export default function AppShell() {
                       }
                     }}
                     onApplyCode={async (codeSnippet, isSelection, targetPath) => {
-                      let filePath = targetPath || selectedFile || (projectFilesList[0] ?? "");
+                      const filePath = targetPath || selectedFile || (projectFilesList[0] ?? "");
                       let originalContent = fileContent;
 
                       if (targetPath && targetPath !== selectedFile && project) {
@@ -1336,12 +1339,16 @@ export default function AppShell() {
                         }
                       }
 
+                      const targetModifiedContent = isSelection
+                        ? codeSnippet
+                        : mergePartialSnippet(originalContent, codeSnippet);
+
                       setPendingDiff({
                         original: originalContent,
-                        modified: codeSnippet,
+                        modified: targetModifiedContent,
                         filePath: filePath,
                       });
-                      currentContent.current = codeSnippet;
+                      currentContent.current = targetModifiedContent;
                       scheduleAutoCompile();
                     }}
                     projectName={project || undefined}

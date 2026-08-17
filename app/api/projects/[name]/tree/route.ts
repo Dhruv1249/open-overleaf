@@ -9,7 +9,7 @@ async function getRecursiveEntries(
 ): Promise<Array<{ name: string; path: string; type: "file" | "dir" }>> {
   const fullDirPath = subPath ? `${project}/${subPath}` : project;
   const rawEntries = await listDirectory(fullDirPath, req);
-  let results: Array<{ name: string; path: string; type: "file" | "dir" }> = [];
+  const results: Array<{ name: string; path: string; type: "file" | "dir" }> = [];
   for (const e of rawEntries) {
     if (e.name === ".open-overleaf" || e.path?.includes("/.open-overleaf") || e.name === ".git") continue;
     const relPath = subPath ? `${subPath}/${e.name}` : e.name;

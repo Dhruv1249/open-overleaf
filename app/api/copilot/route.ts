@@ -223,6 +223,44 @@ const functionDeclarations = [
       },
       required: ["projectName", "filePath", "patches"]
     }
+  },
+  {
+    name: "get_project_preview_image",
+    description: "Renders a specified PDF page to PNG preview image and returns image data for visual inspection of the compiled PDF layout and formatting.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        pdfName: { type: "STRING", description: "PDF filename, defaults to main.pdf" },
+        pageNumber: { type: "INTEGER", description: "Page number to render, defaults to 1" },
+        dpi: { type: "INTEGER", description: "Image resolution DPI, defaults to 150" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "get_project_pdf",
+    description: "Retrieves compiled PDF document metadata and base64 encoded binary data.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        pdfName: { type: "STRING", description: "PDF filename to retrieve, defaults to main.pdf" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "sync_to_drive",
+    description: "Synchronizes the compiled PDF of the project to Google Drive.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        mainFile: { type: "STRING", description: "The main .tex file name to identify compiled PDF" }
+      },
+      required: ["projectName"]
+    }
   }
 ];
 
@@ -498,13 +536,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
     compiledContextPrompt += `User Request: ${userPromptText}\n\n`;
     compiledContextPrompt += `OUTPUT FORMAT INSTRUCTION:\n`;
-    compiledContextPrompt += `Return a valid JSON object strictly adhering to this schema:\n`;
+    compiledContextPrompt += `When you have finished calling tools (or if no tools are needed), return a valid JSON object strictly adhering to this schema:\n`;
     compiledContextPrompt += `{\n`;
     compiledContextPrompt += `  "message": "Brief natural language explanation of your response or proposed fix",\n`;
     compiledContextPrompt += `  "actionType": "modify_file" | "delete_file" | "none",\n`;
     compiledContextPrompt += `  "targetPath": "${activeFilePath || "relative/path/to/target/file.tex"}",\n`;
     compiledContextPrompt += `  "actionDescription": "Human readable description of proposed modification for user approval",\n`;
-    compiledContextPrompt += `  "replacementCode": "The refined or generated LaTeX code snippet to insert or replace"\n`;
+    compiledContextPrompt += `  "replacementCode": "When modifying without text selection, this MUST contain the COMPLETE, full-file LaTeX document content. When modifying with text selection, this contains only the replacement for the highlighted selection."\n`;
     compiledContextPrompt += `}\n`;
 
     const systemInstruction = {
@@ -526,7 +564,9 @@ CRITICAL GUIDELINES:
 10. Use 'apply_patch' when you need to make targeted line-level modifications to a file. Do NOT try to overwrite files; always use surgical patches.
 11. Use 'get_file_history' and 'get_file_at_revision' to inspect past commits/versions of a file when the user asks to see history, revert a change, or when you need to understand how a recent update broke the compilation.
 12. When calling an MCP tool (function call), ALWAYS explain your thinking process and reasoning in a text part before the functionCall. State what you are planning to do, which tool you are choosing, and why.
-13. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.`
+13. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.
+14. If returning 'modify_file' in the final JSON response without a highlighted text selection, 'replacementCode' MUST be the COMPLETE, full-file LaTeX document content including preamble, \\documentclass, packages, and \\begin{document}...\\end{document}. NEVER return an isolated snippet in 'replacementCode' for full-file modifications.
+15. When the user asks to look at, review, or inspect the visual appearance or layout of the PDF, call 'get_project_preview_image' to inspect the rendered page visually.`
         }
       ]
     };
@@ -637,7 +677,7 @@ CRITICAL GUIDELINES:
                 sendChunk({ type: "tool_start", id: callId, name: fc.name, arguments: fc.args });
               }
 
-              const responseParts = await Promise.all(
+              const responsePartsNested = await Promise.all(
                 functionCalls.map(async (fc: any, i: number) => {
                   const callId = `call-${loopCounter}-${i}`;
                   const toolName = fc.name;
@@ -691,19 +731,46 @@ CRITICAL GUIDELINES:
                     toolResult = { error: err.message || "Failed to execute tool" };
                   }
 
-                  return {
-                    functionResponse: {
-                      name: toolName,
-                      response: { result: toolResult },
+                  let inlineImagePart: any = null;
+                  let sanitizedResult = toolResult;
+
+                  if (toolName === "get_project_preview_image" && toolResult?.base64Data) {
+                    inlineImagePart = {
+                      inlineData: {
+                        mimeType: toolResult.mimeType || "image/png",
+                        data: toolResult.base64Data,
+                      },
+                    };
+                    sanitizedResult = {
+                      fileName: toolResult.fileName,
+                      mimeType: toolResult.mimeType,
+                      pageNumber: toolResult.pageNumber,
+                      sizeBytes: toolResult.sizeBytes,
+                      status: "rendered_successfully",
+                    };
+                  }
+
+                  const callParts: any[] = [
+                    {
+                      functionResponse: {
+                        name: toolName,
+                        response: { result: sanitizedResult },
+                      },
                     },
-                  };
+                  ];
+                  if (inlineImagePart) {
+                    callParts.push(inlineImagePart);
+                  }
+
+                  return callParts;
                 })
               );
 
+              const flattenedResponseParts = responsePartsNested.flat();
 
               conversationHistory.push({
                 role: "user",
-                parts: responseParts,
+                parts: flattenedResponseParts,
               });
             } else {
               isDone = true;
