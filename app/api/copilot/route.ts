@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import crypto from "crypto";
 
 export interface CopilotRequestPayload {
@@ -468,8 +468,9 @@ async function fetchGeminiWithFallback(
  */
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const session = verifySessionFromRequest(request);
-    const userAccessToken = session?.access_token as string | undefined;
+    const authResult = requireSession(request as unknown as Request);
+    if ("error" in authResult) return authResult.error;
+    const userAccessToken = authResult.session?.access_token as string | undefined;
 
     const payload: any = await request.json();
     if (payload.action === "approve" || payload.action === "reject") {

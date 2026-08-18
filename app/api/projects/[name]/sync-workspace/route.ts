@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import { listDirectory } from "@/lib/github";
 import fs from "fs";
 import path from "path";
@@ -39,8 +39,9 @@ export async function POST(
   ctx: { params: Promise<{ name: string }> }
 ) {
   const { name: project } = await ctx.params;
-  const session = verifySessionFromRequest(req as unknown as Request);
-  if (!session) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
+  const session = authResult.session;
 
   const token    = (session as any)?.access_token as string | undefined;
   const destDir  = "/tmp/oo-workspace";

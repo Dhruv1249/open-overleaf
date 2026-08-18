@@ -6,7 +6,7 @@ import {
   listAllFilesInDir,
   deleteDirectoryAtPath,
 } from "@/lib/github";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 
 // POST /api/projects/[name]/rename
 // body: { from: string, to: string }
@@ -14,7 +14,8 @@ import { verifySessionFromRequest } from "@/lib/session";
 // Handles both single files and entire directories.
 export async function POST(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const { name: project } = await ctx.params;
     const body = await req.json();
     const { from: fromPath, to: toPath } = body;

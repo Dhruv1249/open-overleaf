@@ -6,12 +6,14 @@ import {
   deleteFileAtPath,
   deleteDirectoryAtPath,
 } from "@/lib/github";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
+
 
 // GET /api/projects/[name]/file?path= — read file content
 export async function GET(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const { name: project } = await ctx.params;
     const url = new URL(req.url);
     const filePath = url.searchParams.get("path");
@@ -29,7 +31,8 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
 // body: { path: string, content?: string, isFolder?: boolean }
 export async function POST(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const { name: project } = await ctx.params;
     const body = await req.json();
     const { path: filePath, content = "", isFolder = false } = body;
@@ -70,7 +73,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
 // body: { path: string, content: string, message?: string }
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const { name: project } = await ctx.params;
     const body = await req.json();
     const { path: filePath, content, message } = body;
@@ -95,7 +99,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ name: strin
 // Directories are deleted recursively (GitHub has no directory-delete API).
 export async function DELETE(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const { name: project } = await ctx.params;
     const url = new URL(req.url);
     const filePath = url.searchParams.get("path");

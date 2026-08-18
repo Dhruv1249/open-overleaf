@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import {
   getValidAccessToken,
   ensureDrivePath,
@@ -23,8 +23,8 @@ import path from "path";
  * Re-syncing uses PATCH → file ID is stable → sharing link never changes.
  */
 export async function POST(req: NextRequest) {
-  try { verifySessionFromRequest(req as unknown as Request); }
-  catch { return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 }); }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   const body: { project?: string; mainFile?: string } = await req.json().catch(() => ({}));
   const { project, mainFile } = body;

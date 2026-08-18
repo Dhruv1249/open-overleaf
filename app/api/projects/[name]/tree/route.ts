@@ -1,6 +1,6 @@
 import { NextResponse, NextRequest } from "next/server";
 import { listDirectory } from "@/lib/github";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 
 async function getRecursiveEntries(
   project: string,
@@ -30,7 +30,8 @@ async function getRecursiveEntries(
 // Returns entries with paths relative to the project root
 export async function GET(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const { name: project } = await ctx.params;
     const url = new URL(req.url);
     const subPath = url.searchParams.get("path") || "";

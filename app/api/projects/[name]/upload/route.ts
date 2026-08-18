@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import { putBinaryAtPath, getFileMeta } from "@/lib/github";
 
 /**
@@ -20,8 +20,8 @@ export async function POST(
   ctx: { params: Promise<{ name: string }> }
 ) {
   const { name: project } = await ctx.params;
-  try { verifySessionFromRequest(req as unknown as Request); }
-  catch { return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 }); }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   let formData: FormData;
   try { formData = await req.formData(); }

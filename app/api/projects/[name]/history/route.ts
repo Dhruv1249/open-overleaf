@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 
 function ghHeaders(token?: string): Record<string, string> {
   const h: Record<string, string> = { Accept: "application/vnd.github+json" };
@@ -38,9 +38,9 @@ export async function GET(
 ) {
   const { name: project } = await ctx.params;
 
-  let session: any;
-  try { session = verifySessionFromRequest(req as unknown as Request); }
-  catch { return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 }); }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
+  const session = authResult.session;
 
   const token = session?.access_token as string | undefined;
   const owner  = process.env.GITHUB_SINGLE_REPO_OWNER;

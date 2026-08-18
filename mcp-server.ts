@@ -8,13 +8,14 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
-import { exec } from "child_process";
+import { exec, execFile } from "child_process";
 import { promisify } from "util";
 
 import jwt from "jsonwebtoken";
 import * as crypto from "crypto";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(process.cwd(), "projects");
 const LOCAL_REPO_DIR = process.env.LOCAL_REPO_DIR || "/tmp/oo-repo-cache";
 const MCP_PORT = parseInt(process.env.MCP_PORT || "3202", 10);
@@ -52,19 +53,27 @@ async function ensureLocalRepoClone(userGhToken?: string): Promise<string> {
   return LOCAL_REPO_DIR;
 }
 
-/**
- * Computes or retrieves the active MCP authentication token.
- * Uses OVERLEAF_MCP_TOKEN if set, otherwise derives SHA-256 hash of secret + ghTokenHash + repoName.
- */
 function getEffectiveMCPToken(): string {
   if (process.env.OVERLEAF_MCP_TOKEN) {
     return process.env.OVERLEAF_MCP_TOKEN;
   }
 
-  const secretString = process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET || "open_overleaf_mcp_secret";
+  const secretString =
+    process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET;
+  if (!secretString) {
+    throw new Error(
+      "Neither OVERLEAF_MCP_TOKEN nor OVERLEAF_MCP_SECRET or SESSION_SECRET is configured"
+    );
+  }
+
   let ghTokenHash = process.env.GITHUB_TOKEN_HASH || "";
   if (!ghTokenHash) {
-    const rawSecret = process.env.GITHUB_CLIENT_SECRET || "default_gh_token";
+    const rawSecret = process.env.GITHUB_CLIENT_SECRET || "";
+    if (!rawSecret) {
+      throw new Error(
+        "GITHUB_TOKEN_HASH or GITHUB_CLIENT_SECRET must be configured"
+      );
+    }
     ghTokenHash = crypto.createHash("sha256").update(rawSecret).digest("hex");
   }
   const repoName = process.env.GITHUB_SINGLE_REPO_NAME || "overleaf-projects";
@@ -73,31 +82,29 @@ function getEffectiveMCPToken(): string {
   return crypto.createHash("sha256").update(rawCombined).digest("hex");
 }
 
-/**
- * Diagnostic error detail extracted from LaTeX log output.
- */
 interface DiagnosticError {
   line?: number;
   message: string;
   snippet?: string;
 }
 
-/**
- * Structured diagnostics result parsed from TeX compilation logs.
- */
 interface TeXDiagnostics {
   hasErrors: boolean;
   errors: DiagnosticError[];
   missingPackages: string[];
 }
 
-/**
- * Validates and resolves project file paths to prevent directory traversal outside PROJECTS_DIR.
- */
 function resolveSafePath(projectName: string, filePath: string): string {
-  const resolvedProjectFolder = path.resolve(PROJECTS_DIR, projectName);
-  const resolvedTargetFile = path.resolve(resolvedProjectFolder, filePath);
+  const resolvedProjectsRoot = path.resolve(PROJECTS_DIR);
+  const resolvedProjectFolder = path.resolve(resolvedProjectsRoot, projectName);
 
+  if (!resolvedProjectFolder.startsWith(resolvedProjectsRoot)) {
+    throw new Error(
+      `Security Violation: Access denied for project directory ${projectName}`
+    );
+  }
+
+  const resolvedTargetFile = path.resolve(resolvedProjectFolder, filePath);
   if (!resolvedTargetFile.startsWith(resolvedProjectFolder)) {
     throw new Error(`Security Violation: Access denied for path ${filePath}`);
   }
@@ -151,16 +158,13 @@ function parseTeXDiagnostics(stdoutOutput: string, stderrOutput: string): TeXDia
   };
 }
 
-/**
- * Inspects compiled PDF using pdfinfo to count total rendered pages.
- */
 async function getPDFPageCount(pdfFilePath: string): Promise<number> {
   if (!fs.existsSync(pdfFilePath)) {
     return 0;
   }
 
   try {
-    const { stdout } = await execAsync(`pdfinfo "${pdfFilePath}"`);
+    const { stdout } = await execFileAsync("pdfinfo", [pdfFilePath]);
     const pageMatch = stdout.match(/Pages:\s+(\d+)/);
     if (pageMatch) {
       return parseInt(pageMatch[1], 10);
@@ -250,14 +254,23 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
   if (name === "list_files") {
     const projectName = String(toolArguments?.projectName);
     const subDirectory = String(toolArguments?.subDir || "");
-    const queryString = subDirectory ? `?path=${encodeURIComponent(subDirectory)}` : "";
+    const queryString = subDirectory
+      ? `?path=${encodeURIComponent(subDirectory)}`
+      : "";
     const result = await syncWithWebUIAPI(
       "GET",
       `/api/projects/${encodeURIComponent(projectName)}/tree${queryString}`,
       undefined,
       userGhToken
     );
-    return { files: result.entries };
+    const formattedFiles = (result.entries || []).map((entry: any) => ({
+      name: entry.name,
+      path: entry.path,
+      isDirectory: entry.type === "dir",
+      type: entry.type,
+      sizeBytes: entry.size || 0,
+    }));
+    return { files: formattedFiles };
   }
 
   if (name === "read_project_file") {
@@ -350,13 +363,21 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       userGhToken
     );
 
+    const compiledPdfName = result.pdfFile || entryFilename.replace(/\.tex$/i, ".pdf");
+    const localPdfPath = path.join("/tmp/oo-compile", projectName, compiledPdfName);
+    const calculatedPageCount = await getPDFPageCount(localPdfPath);
+
     return {
       status: result.ok ? "compiled" : "failed",
       engine: engineName,
       pdfFile: result.pdfFile ?? "",
+      pdfPath: result.pdfFile ?? "",
+      pageCount: calculatedPageCount,
       errorCount: result.errors ?? 0,
       warningCount: result.warnings ?? 0,
+      outputLog: result.log ?? "",
       log: result.log ?? "",
+      errors: typeof result.error === "string" ? result.error : (result.ok ? "" : "Compilation failed"),
     };
   }
 
@@ -448,10 +469,22 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       throw new Error(`Failed to compile or find PDF ${pdfFilename} in project ${projectName}: ${compileResult?.log || ""}`);
     }
 
-    const temporaryOutputPrefix = path.join("/tmp/oo-compile", projectName, `preview_p${targetPageNumber}`);
-    const pdftoppmCommand = `pdftoppm -png -r ${resolutionDPI} -f ${targetPageNumber} -l ${targetPageNumber} "${pdfFullPath}" "${temporaryOutputPrefix}"`;
-
-    await execAsync(pdftoppmCommand);
+    const temporaryOutputPrefix = path.join(
+      "/tmp/oo-compile",
+      projectName,
+      `preview_p${targetPageNumber}`
+    );
+    await execFileAsync("pdftoppm", [
+      "-png",
+      "-r",
+      String(resolutionDPI),
+      "-f",
+      String(targetPageNumber),
+      "-l",
+      String(targetPageNumber),
+      pdfFullPath,
+      temporaryOutputPrefix,
+    ]);
 
     const expectedPngPath = `${temporaryOutputPrefix}-${targetPageNumber}.png`;
     const fallbackPngPath = `${temporaryOutputPrefix}-01.png`;
@@ -578,19 +611,25 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       throw new Error(`Project ${projectName} not found in repo`);
     }
 
-    const caseFlag = caseSensitive ? "" : "-i";
-    const includeFlag = filePattern ? `--include="${filePattern}"` : "";
-    const grepCmd = `grep -rn ${caseFlag} ${includeFlag} ${JSON.stringify(query)} .`;
+    const grepArgs: string[] = ["-rn"];
+    if (!caseSensitive) {
+      grepArgs.push("-i");
+    }
+    if (filePattern) {
+      grepArgs.push(`--include=${filePattern}`);
+    }
+    grepArgs.push(query, ".");
 
     let grepOutput = "";
     try {
-      const result = await execAsync(grepCmd, { cwd: projectDir });
+      const result = await execFileAsync("grep", grepArgs, { cwd: projectDir });
       grepOutput = result.stdout;
     } catch (grepError: any) {
       grepOutput = grepError.stdout || "";
     }
 
-    const matches = grepOutput.split("\n")
+    const matches = grepOutput
+      .split("\n")
       .filter(Boolean)
       .map((line) => {
         const colonIndex = line.indexOf(":");
@@ -620,12 +659,18 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 
     let chktexOutput = "";
     try {
-      const result = await execAsync(`chktex -q "${texFilePath}"`);
+      const result = await execFileAsync("chktex", ["-q", texFilePath]);
       chktexOutput = result.stdout + result.stderr;
     } catch (chktexError: any) {
       chktexOutput = (chktexError.stdout || "") + (chktexError.stderr || "");
-      if (chktexOutput.includes("not found") || chktexOutput.includes("command not found")) {
-        return { available: false, message: "chktex is not installed in this environment" };
+      if (
+        chktexOutput.includes("not found") ||
+        chktexOutput.includes("command not found")
+      ) {
+        return {
+          available: false,
+          message: "chktex is not installed in this environment",
+        };
       }
     }
 
@@ -703,24 +748,25 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       if (!matched) {
         const normalizedOriginal = originalContent.trim().replace(/\r\n/g, "\n");
         const joinedFile = lines.join("\n");
-        const index = joinedFile.indexOf(normalizedOriginal);
-        if (index !== -1) {
-          const beforeMatch = joinedFile.substring(0, index);
-          const matchedStartLine = beforeMatch.split("\n").length;
-          const originalLinesCount = normalizedOriginal.split("\n").length;
-          const matchedEndLine = matchedStartLine + originalLinesCount - 1;
-          
-          actualStartLine = matchedStartLine;
-          actualEndLine = matchedEndLine;
-          matched = true;
+        const matchIndex = joinedFile.indexOf(normalizedOriginal);
+        if (matchIndex !== -1) {
+          const replacedFile =
+            joinedFile.substring(0, matchIndex) +
+            newContent +
+            joinedFile.substring(matchIndex + normalizedOriginal.length);
+          lines.length = 0;
+          lines.push(...replacedFile.split("\n"));
+          continue;
         }
       }
 
       if (!matched) {
-        const actualBlock = lines.slice(startLine - 1, Math.min(endLine, lines.length)).join("\n");
+        const actualBlock = lines
+          .slice(startLine - 1, Math.min(endLine, lines.length))
+          .join("\n");
         throw new Error(
           `Validation failed for line range [${startLine}, ${endLine}]. ` +
-          `Expected:\n"${originalContent}"\nBut found:\n"${actualBlock}"`
+            `Expected:\n"${originalContent}"\nBut found:\n"${actualBlock}"`
         );
       }
 
@@ -1084,8 +1130,8 @@ async function handleHttpRequest(
   const requestUrl = request.url || "/";
   console.log(`[MCP Server HTTP] Request: ${request.method} ${requestUrl}`);
 
-  const activeMCPToken = getEffectiveMCPToken();
-  if (activeMCPToken) {
+  try {
+    const activeMCPToken = getEffectiveMCPToken();
     const authHeader = request.headers["authorization"] || "";
     const expectedHeader = `Bearer ${activeMCPToken}`;
     if (authHeader !== expectedHeader) {
@@ -1093,6 +1139,14 @@ async function handleHttpRequest(
       response.end(JSON.stringify({ error: "Unauthorized MCP access" }));
       return;
     }
+  } catch (authError: any) {
+    response.writeHead(500, { "Content-Type": "application/json" });
+    response.end(
+      JSON.stringify({
+        error: authError.message || "MCP server authentication not configured",
+      })
+    );
+    return;
   }
 
   if (request.method === "GET" && requestUrl.startsWith("/sse")) {

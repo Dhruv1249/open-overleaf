@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import { readFileAtPath, putFileAtPath, getFileMeta } from "@/lib/github";
 
 const SETTINGS_FILENAME = ".overleaf.json";
@@ -11,11 +11,8 @@ export async function GET(
   ctx: { params: Promise<{ name: string }> }
 ) {
   const { name: project } = await ctx.params;
-  try {
-    verifySessionFromRequest(req as unknown as Request);
-  } catch {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   try {
     const raw = await readFileAtPath(
@@ -41,11 +38,8 @@ export async function PUT(
   ctx: { params: Promise<{ name: string }> }
 ) {
   const { name: project } = await ctx.params;
-  try {
-    verifySessionFromRequest(req as unknown as Request);
-  } catch {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   const body = await req.json().catch(() => ({}));
   if (!body.settings || typeof body.settings !== "object") {

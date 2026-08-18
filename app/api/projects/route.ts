@@ -5,7 +5,7 @@ import {
   putFileAtPath,
   deleteDirectoryAtPath,
 } from "../../../lib/github";
-import { verifySessionFromRequest } from "../../../lib/session";
+import { requireSession } from "../../../lib/session";
 
 // GET /api/projects — list all projects (top-level dirs)
 export async function GET(req: Request) {
@@ -33,7 +33,8 @@ export async function GET(req: Request) {
 // body: { name: string, description?: string }
 export async function POST(req: NextRequest) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const body = await req.json();
     const { name, description = "" } = body;
     if (!name || typeof name !== "string" || !name.trim())
@@ -84,7 +85,8 @@ export async function POST(req: NextRequest) {
 // DELETE /api/projects?name= — delete an entire project directory from GitHub
 export async function DELETE(req: NextRequest) {
   try {
-    verifySessionFromRequest(req as unknown as Request);
+    const authResult = requireSession(req as unknown as Request);
+    if ("error" in authResult) return authResult.error;
     const url = new URL(req.url);
     const name = url.searchParams.get("name");
     if (!name)

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
@@ -33,8 +33,8 @@ export async function POST(
 ) {
   const { name: project } = await ctx.params;
 
-  try { verifySessionFromRequest(req as unknown as Request); }
-  catch { return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 }); }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   const body        = await req.json().catch(() => ({}));
   const content: string  = body.content ?? "";
@@ -116,8 +116,8 @@ export async function GET(
 ) {
   const { name: project } = await ctx.params;
 
-  try { verifySessionFromRequest(req as unknown as Request); }
-  catch { return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 }); }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   const url  = new URL(req.url);
   const key  = url.searchParams.get("key") ?? "";
