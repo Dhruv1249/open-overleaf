@@ -185,8 +185,12 @@ function getSystemAuthCookie(userAccessToken?: string): string {
   const payload: any = {
     username: process.env.ALLOW_GITHUB_USERNAME || "Dhruv1249",
   };
-  if (userAccessToken) {
-    payload.access_token = userAccessToken;
+  const effectiveToken =
+    userAccessToken ||
+    process.env.GITHUB_TOKEN ||
+    process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+  if (effectiveToken) {
+    payload.access_token = effectiveToken;
   }
   const token = jwt.sign(payload, SESSION_SECRET);
   return `oo_session=${token}`;
@@ -801,6 +805,38 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     };
   }
 
+  if (name === "write_project_file") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const content = String(toolArguments?.content ?? "");
+
+    const targetFullPath = resolveSafePath(projectName, filePath);
+    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
+    fs.writeFileSync(targetFullPath, content, "utf-8");
+
+    if (userGhToken) {
+      try {
+        await syncWithWebUIAPI(
+          "PUT",
+          `/api/projects/${encodeURIComponent(projectName)}/file`,
+          {
+            path: filePath,
+            content: content,
+            message: `MCP: write ${filePath}`,
+          },
+          userGhToken
+        );
+      } catch (syncErr: any) {
+        console.warn(`[MCP Server] Warning: Could not sync ${filePath} to GitHub:`, syncErr.message);
+      }
+    }
+
+    return {
+      success: true,
+      message: `Successfully wrote ${filePath} in project ${projectName}`,
+    };
+  }
+
   throw new Error(`Unknown MCP tool requested: ${name}`);
 }
 
@@ -894,6 +930,20 @@ function createMCPServer(): Server {
               githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
             },
             required: ["projectName", "filePath", "githubToken"],
+          },
+        },
+        {
+          name: "write_project_file",
+          description: "Writes entire file content to an open-overleaf project both locally and synced to GitHub.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the LaTeX project" },
+              filePath: { type: "string", description: "Relative file path inside project" },
+              content: { type: "string", description: "The full text content to write" },
+              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write access" },
+            },
+            required: ["projectName", "filePath", "content"],
           },
         },
         {
@@ -1131,19 +1181,44 @@ async function handleHttpRequest(
   console.log(`[MCP Server HTTP] Request: ${request.method} ${requestUrl}`);
 
   try {
-    const activeMCPToken = getEffectiveMCPToken();
-    const authHeader = request.headers["authorization"] || "";
-    const expectedHeader = `Bearer ${activeMCPToken}`;
-    if (authHeader !== expectedHeader) {
+    const authHeader = (request.headers["authorization"] || "").trim();
+    if (!authHeader.startsWith("Bearer ")) {
       response.writeHead(401, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "Unauthorized MCP access" }));
+      response.end(JSON.stringify({ error: "Unauthorized: Missing Bearer token in Authorization header" }));
+      return;
+    }
+    const incomingToken = authHeader.slice(7).trim();
+
+    let isAuthorized = false;
+    try {
+      const activeMCPToken = getEffectiveMCPToken();
+      if (incomingToken === activeMCPToken) {
+        isAuthorized = true;
+      }
+    } catch {
+      // getEffectiveMCPToken might throw if not configured
+    }
+
+    if (!isAuthorized && process.env.OVERLEAF_MCP_TOKEN) {
+      isAuthorized = incomingToken === process.env.OVERLEAF_MCP_TOKEN;
+    }
+    if (!isAuthorized && process.env.OVERLEAF_MCP_SECRET) {
+      isAuthorized = incomingToken === process.env.OVERLEAF_MCP_SECRET;
+    }
+    if (!isAuthorized && process.env.SESSION_SECRET) {
+      isAuthorized = incomingToken === process.env.SESSION_SECRET;
+    }
+
+    if (!isAuthorized) {
+      response.writeHead(401, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ error: "Unauthorized MCP access: invalid token" }));
       return;
     }
   } catch (authError: any) {
     response.writeHead(500, { "Content-Type": "application/json" });
     response.end(
       JSON.stringify({
-        error: authError.message || "MCP server authentication not configured",
+        error: authError.message || "MCP server authentication error",
       })
     );
     return;
