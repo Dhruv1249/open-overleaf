@@ -28,7 +28,7 @@ async function getRecursiveEntries(
       try {
         const localItems = fs.readdirSync(localDir, { withFileTypes: true });
         for (const item of localItems) {
-          if (item.name.startsWith(".") || item.name.endsWith(".aux") || item.name.endsWith(".log") || item.name.endsWith(".out") || item.name.endsWith(".fls") || item.name.endsWith(".fdb_latexmk") || item.name.endsWith(".synctex.gz")) continue;
+          if (item.name.startsWith(".") || item.name.startsWith("temp-") || item.name.endsWith(".pdf") || item.name.endsWith(".aux") || item.name.endsWith(".log") || item.name.endsWith(".out") || item.name.endsWith(".fls") || item.name.endsWith(".fdb_latexmk") || item.name.endsWith(".synctex.gz") || item.name.endsWith(".xdv") || item.name.endsWith(".toc") || item.name.endsWith(".nav") || item.name.endsWith(".snm") || item.name.endsWith(".bcf") || item.name.endsWith(".run.xml")) continue;
           if (!rawEntries.some(e => e.name === item.name)) {
             rawEntries.push({
               name: item.name,
