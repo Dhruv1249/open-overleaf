@@ -1,6 +1,8 @@
 import { NextResponse, NextRequest } from "next/server";
 import { listDirectory } from "@/lib/github";
 import { requireSession } from "@/lib/session";
+import fs from "fs";
+import path from "path";
 
 async function getRecursiveEntries(
   project: string,
@@ -8,7 +10,37 @@ async function getRecursiveEntries(
   req: Request
 ): Promise<Array<{ name: string; path: string; type: "file" | "dir" }>> {
   const fullDirPath = subPath ? `${project}/${subPath}` : project;
-  const rawEntries = await listDirectory(fullDirPath, req);
+  let rawEntries: any[] = [];
+  try {
+    rawEntries = await listDirectory(fullDirPath, req);
+  } catch {
+    rawEntries = [];
+  }
+
+  const candidateLocalDirs = [
+    path.join(process.cwd(), "projects", project, subPath),
+    path.join("/app/projects", project, subPath),
+    path.join("/tmp/oo-compile", project, subPath),
+  ];
+
+  for (const localDir of candidateLocalDirs) {
+    if (fs.existsSync(localDir) && fs.statSync(localDir).isDirectory()) {
+      try {
+        const localItems = fs.readdirSync(localDir, { withFileTypes: true });
+        for (const item of localItems) {
+          if (item.name.startsWith(".") || item.name.endsWith(".aux") || item.name.endsWith(".log") || item.name.endsWith(".out") || item.name.endsWith(".fls") || item.name.endsWith(".fdb_latexmk") || item.name.endsWith(".synctex.gz")) continue;
+          if (!rawEntries.some(e => e.name === item.name)) {
+            rawEntries.push({
+              name: item.name,
+              path: subPath ? `${project}/${subPath}/${item.name}` : `${project}/${item.name}`,
+              type: item.isDirectory() ? "dir" : "file",
+            });
+          }
+        }
+      } catch {}
+    }
+  }
+
   const results: Array<{ name: string; path: string; type: "file" | "dir" }> = [];
   for (const e of rawEntries) {
     if (e.name === ".open-overleaf" || e.path?.includes("/.open-overleaf") || e.name === ".git") continue;
@@ -37,26 +69,19 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
     const subPath = url.searchParams.get("path") || "";
     const isRecursive = url.searchParams.get("recursive") === "true";
 
+    const entries = await getRecursiveEntries(project, subPath, req as unknown as Request);
     if (isRecursive) {
-      const entries = await getRecursiveEntries(project, subPath, req as unknown as Request);
       return NextResponse.json({ ok: true, entries });
     }
 
-    // Full path within repo: "projectName" or "projectName/subPath"
-    const fullDirPath = subPath ? `${project}/${subPath}` : project;
-    const rawEntries = await listDirectory(fullDirPath, req as unknown as Request);
+    // Top-level only
+    const directEntries = entries.filter(e => {
+      if (!subPath) return !e.path.includes("/");
+      const rest = e.path.slice(subPath.length + 1);
+      return !rest.includes("/");
+    });
 
-    // Normalize: return paths relative to project root, not repo root
-    // Filter out the hidden .open-overleaf metadata directory
-    const entries = rawEntries
-      .filter((e: any) => e.name !== ".open-overleaf" && !e.path?.includes("/.open-overleaf"))
-      .map((e: any) => ({
-        name: e.name,
-        path: subPath ? `${subPath}/${e.name}` : e.name,
-        type: e.type as "file" | "dir",
-      }));
-
-    return NextResponse.json({ ok: true, entries });
+    return NextResponse.json({ ok: true, entries: directEntries });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }

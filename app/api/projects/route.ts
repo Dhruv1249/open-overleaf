@@ -6,11 +6,41 @@ import {
   deleteDirectoryAtPath,
 } from "../../../lib/github";
 import { requireSession } from "../../../lib/session";
+import fs from "fs";
+import path from "path";
 
 // GET /api/projects — list all projects (top-level dirs)
 export async function GET(req: Request) {
   try {
-    const dirs = await listTopLevelDirectories(req);
+    let dirs: Array<{ name: string; path: string }> = [];
+    try {
+      dirs = await listTopLevelDirectories(req);
+    } catch {
+      dirs = [];
+    }
+
+    const candidateRoots = [
+      process.env.PROJECTS_DIR,
+      path.join(process.cwd(), "projects"),
+      "/app/projects",
+      "/tmp/open-overleaf-projects",
+    ].filter(Boolean) as string[];
+
+    for (const root of candidateRoots) {
+      if (fs.existsSync(root)) {
+        try {
+          const localDirs = fs.readdirSync(root, { withFileTypes: true })
+            .filter(d => d.isDirectory() && !d.name.startsWith("."))
+            .map(d => ({ name: d.name, path: d.name }));
+          for (const ld of localDirs) {
+            if (!dirs.some(d => d.name === ld.name)) {
+              dirs.push(ld);
+            }
+          }
+        } catch {}
+      }
+    }
+
     const projects = [];
     for (const d of dirs) {
       const manifestPath = `${d.name}/.open-overleaf/project.json`;

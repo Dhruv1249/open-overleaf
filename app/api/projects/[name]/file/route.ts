@@ -7,6 +7,8 @@ import {
   deleteDirectoryAtPath,
 } from "@/lib/github";
 import { requireSession } from "@/lib/session";
+import fs from "fs";
+import path from "path";
 
 
 // GET /api/projects/[name]/file?path= — read file content
@@ -19,7 +21,29 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
     const filePath = url.searchParams.get("path");
     if (!filePath) return NextResponse.json({ ok: false, error: "path query required" }, { status: 400 });
     const fullPath = `${project}/${filePath}`;
-    const content = await readFileAtPath(fullPath, req as unknown as Request);
+    let content: string | null = null;
+    try {
+      content = await readFileAtPath(fullPath, req as unknown as Request);
+    } catch {
+      content = null;
+    }
+
+    if (content === null) {
+      const candidatePaths = [
+        path.join("/tmp/oo-compile", project, filePath),
+        path.join(process.cwd(), "projects", project, filePath),
+        path.join("/app/projects", project, filePath),
+      ];
+      for (const cp of candidatePaths) {
+        if (fs.existsSync(cp) && !fs.statSync(cp).isDirectory()) {
+          try {
+            content = fs.readFileSync(cp, "utf8");
+            break;
+          } catch {}
+        }
+      }
+    }
+
     if (content === null) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
     return NextResponse.json({ ok: true, content });
   } catch (err: any) {

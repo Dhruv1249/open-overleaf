@@ -231,7 +231,9 @@ async function executeMCPTool(name: string, toolArguments: Record<string, any>):
 }
 
 async function executeMCPToolInner(name: string, toolArguments: Record<string, any>): Promise<any> {
-  const userGhToken = toolArguments?.githubToken ? String(toolArguments.githubToken) : undefined;
+  const userGhToken = toolArguments?.githubToken
+    ? String(toolArguments.githubToken)
+    : (process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN || undefined);
 
   if (name === "list_projects") {
     if (!fs.existsSync(PROJECTS_DIR)) {
@@ -450,7 +452,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
-    const tempPdfPath = path.join(tempDir, `temp-${Date.now()}-${pdfFilename}`);
+    const tempPdfPath = path.join(tempDir, `temp-${Date.now()}-${path.basename(pdfFilename)}`);
     fs.writeFileSync(tempPdfPath, pdfBuffer);
     const totalPages = await getPDFPageCount(tempPdfPath);
     try { fs.unlinkSync(tempPdfPath); } catch {}
