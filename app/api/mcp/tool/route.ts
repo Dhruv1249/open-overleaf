@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const cleanIncomingToken = incomingToken.trim();
+    const cleanIncomingToken = authHeader.slice(7).trim();
     let isAuthorized = false;
 
     const activeMCPToken = getEffectiveMCPToken();

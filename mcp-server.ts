@@ -1187,7 +1187,7 @@ async function handleHttpRequest(
       response.end(JSON.stringify({ error: "Unauthorized: Missing Bearer token in Authorization header" }));
       return;
     }
-    const cleanIncomingToken = incomingToken.trim();
+    const cleanIncomingToken = authHeader.slice(7).trim();
     let isAuthorized = false;
     try {
       const activeMCPToken = getEffectiveMCPToken();
