@@ -31,19 +31,46 @@ async function syncProjectToDisk(
   req: Request,
   destDir: string
 ): Promise<void> {
+  // Sync any locally written MCP files for this project into compilation directory
+  const localProjectDir = path.join("/tmp/open-overleaf-projects", project);
+  if (fs.existsSync(localProjectDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+    try {
+      fs.cpSync(localProjectDir, destDir, { recursive: true });
+    } catch (cpErr: any) {
+      console.warn(`[SyncProjectToDisk] Local copy error:`, cpErr.message);
+    }
+  }
+
   async function syncDir(ghDirPath: string, localDir: string) {
     fs.mkdirSync(localDir, { recursive: true });
-    const entries = await listDirectory(ghDirPath, req);
+    let entries: Array<{ name: string; path: string; type: string }> = [];
+    try {
+      entries = await listDirectory(ghDirPath, req);
+    } catch (err: any) {
+      // If folder is not on GitHub yet (e.g. initial project creation), treat as empty
+      if (String(err?.message || "").includes("404")) {
+        entries = [];
+      } else {
+        console.warn(`[SyncProjectToDisk] Warning listing GitHub directory ${ghDirPath}:`, err.message);
+        entries = [];
+      }
+    }
+
     await Promise.all(
       entries.map(async (entry: { name: string; path: string; type: string }) => {
         const localPath = path.join(localDir, entry.name);
         if (entry.type === "dir") {
           await syncDir(entry.path, localPath);
         } else {
-          const buf = await fetchGitHubFileBuffer(entry.path, token);
-          if (buf !== null) {
-            fs.mkdirSync(path.dirname(localPath), { recursive: true });
-            fs.writeFileSync(localPath, buf);
+          try {
+            const buf = await fetchGitHubFileBuffer(entry.path, token);
+            if (buf !== null) {
+              fs.mkdirSync(path.dirname(localPath), { recursive: true });
+              fs.writeFileSync(localPath, buf);
+            }
+          } catch (fetchErr: any) {
+            console.warn(`[SyncProjectToDisk] Could not fetch ${entry.path}:`, fetchErr.message);
           }
         }
       })
