@@ -360,28 +360,45 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const engineName = String(toolArguments?.engine || "xelatex");
     const entryFilename = String(toolArguments?.entryFile || "main.tex");
 
-    const result = await syncWithWebUIAPI(
-      "POST",
-      `/api/projects/${encodeURIComponent(projectName)}/compile`,
-      { mainFile: entryFilename, engine: engineName },
-      userGhToken
-    );
+    let result: any = null;
+    try {
+      const response = await fetch(`${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: getSystemAuthCookie(userGhToken),
+        },
+        body: JSON.stringify({ mainFile: entryFilename, engine: engineName }),
+      });
+      result = await response.json().catch(() => ({}));
+      if (!response.ok && response.status !== 422) {
+        throw new Error(`GitHub Sync POST /api/projects/${projectName}/compile failed (HTTP ${response.status}): ${result?.error || JSON.stringify(result)}`);
+      }
+    } catch (fetchErr: any) {
+      if (!result) throw fetchErr;
+    }
 
-    const compiledPdfName = result.pdfFile || entryFilename.replace(/\.tex$/i, ".pdf");
-    const localPdfPath = path.join("/tmp/oo-compile", projectName, compiledPdfName);
-    const calculatedPageCount = await getPDFPageCount(localPdfPath);
+    const compiledPdfName = result?.pdfFile || entryFilename.replace(/\.tex$/i, ".pdf");
+    let localPdfPath = path.join("/tmp/oo-compile", projectName, compiledPdfName);
+    if (!fs.existsSync(localPdfPath)) {
+      const subDirPath = path.join("/tmp/oo-compile", projectName, entryFilename.replace(/\.tex$/i, ".pdf"));
+      if (fs.existsSync(subDirPath)) {
+        localPdfPath = subDirPath;
+      }
+    }
+    const calculatedPageCount = fs.existsSync(localPdfPath) ? await getPDFPageCount(localPdfPath) : 0;
 
     return {
-      status: result.ok ? "compiled" : "failed",
+      status: result?.ok ? "compiled" : "failed",
       engine: engineName,
-      pdfFile: result.pdfFile ?? "",
-      pdfPath: result.pdfFile ?? "",
+      pdfFile: result?.pdfFile ?? "",
+      pdfPath: result?.pdfFile ?? "",
       pageCount: calculatedPageCount,
-      errorCount: result.errors ?? 0,
-      warningCount: result.warnings ?? 0,
-      outputLog: result.log ?? "",
-      log: result.log ?? "",
-      errors: typeof result.error === "string" ? result.error : (result.ok ? "" : "Compilation failed"),
+      errorCount: result?.errors ?? (result?.ok ? 0 : 1),
+      warningCount: result?.warnings ?? 0,
+      outputLog: result?.log ?? "",
+      log: result?.log ?? "",
+      errors: typeof result?.error === "string" ? result.error : (result?.ok ? "" : "Compilation failed"),
     };
   }
 
