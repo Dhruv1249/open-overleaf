@@ -35,21 +35,29 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const incomingToken = authHeader.slice(7).trim();
+    const cleanIncomingToken = incomingToken.trim();
     let isAuthorized = false;
 
     const activeMCPToken = getEffectiveMCPToken();
-    if (activeMCPToken && incomingToken === activeMCPToken) {
+    if (activeMCPToken && cleanIncomingToken === activeMCPToken) {
       isAuthorized = true;
     }
     if (!isAuthorized && process.env.OVERLEAF_MCP_TOKEN) {
-      isAuthorized = incomingToken === process.env.OVERLEAF_MCP_TOKEN;
+      isAuthorized = cleanIncomingToken === process.env.OVERLEAF_MCP_TOKEN.trim();
     }
     if (!isAuthorized && process.env.OVERLEAF_MCP_SECRET) {
-      isAuthorized = incomingToken === process.env.OVERLEAF_MCP_SECRET;
+      isAuthorized = cleanIncomingToken === process.env.OVERLEAF_MCP_SECRET.trim();
     }
     if (!isAuthorized && process.env.SESSION_SECRET) {
-      isAuthorized = incomingToken === process.env.SESSION_SECRET;
+      isAuthorized = cleanIncomingToken === process.env.SESSION_SECRET.trim();
+    }
+    if (!isAuthorized && process.env.OVERLEAF_MCP_SECRET) {
+      const hashedSecret = crypto.createHash("sha256").update(process.env.OVERLEAF_MCP_SECRET.trim()).digest("hex");
+      isAuthorized = cleanIncomingToken === hashedSecret;
+    }
+    if (!isAuthorized && process.env.SESSION_SECRET) {
+      const hashedSecret = crypto.createHash("sha256").update(process.env.SESSION_SECRET.trim()).digest("hex");
+      isAuthorized = cleanIncomingToken === hashedSecret;
     }
 
     if (!isAuthorized) {

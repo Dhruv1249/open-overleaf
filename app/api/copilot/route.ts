@@ -412,11 +412,25 @@ function sanitizeForLog(obj: any): any {
   return copy;
 }
 
-const modelsCascade = [
+const defaultModelsCascade = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-2.5-flash-lite"
 ];
+
+function getModelsCascade(): string[] {
+  const envModels = process.env.GEMINI_MODELS || process.env.GEMINI_MODEL;
+  if (envModels) {
+    const parsed = envModels
+      .split(",")
+      .map((model) => model.trim())
+      .filter(Boolean);
+    if (parsed.length > 0) {
+      return parsed;
+    }
+  }
+  return defaultModelsCascade;
+}
 
 /**
  * Executes a call to the Gemini API with fallback cascading support on rate limits.
@@ -425,6 +439,7 @@ async function fetchGeminiWithFallback(
   payload: any,
   apiKey: string
 ): Promise<{ success: boolean; data?: any; error?: string; status?: number }> {
+  const modelsCascade = getModelsCascade();
   for (let modelIndex = 0; modelIndex < modelsCascade.length; modelIndex++) {
     const modelName = modelsCascade[modelIndex];
     const targetGeminiEndpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
