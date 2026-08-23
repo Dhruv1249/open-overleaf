@@ -32,13 +32,21 @@ async function syncProjectToDisk(
   destDir: string
 ): Promise<void> {
   // Sync any locally written MCP files for this project into compilation directory
-  const localProjectDir = path.join("/tmp/open-overleaf-projects", project);
-  if (fs.existsSync(localProjectDir)) {
-    fs.mkdirSync(destDir, { recursive: true });
-    try {
-      fs.cpSync(localProjectDir, destDir, { recursive: true });
-    } catch (cpErr: any) {
-      console.warn(`[SyncProjectToDisk] Local copy error:`, cpErr.message);
+  const possibleDirs = [
+    path.join(process.cwd(), "projects", project),
+    path.join("/app/projects", project),
+    path.join("/tmp/open-overleaf-projects", project),
+    process.env.PROJECTS_DIR ? path.join(process.env.PROJECTS_DIR, project) : "",
+  ].filter(Boolean);
+
+  for (const localDir of possibleDirs) {
+    if (fs.existsSync(localDir)) {
+      try {
+        fs.mkdirSync(destDir, { recursive: true });
+        fs.cpSync(localDir, destDir, { recursive: true });
+      } catch (cpErr: any) {
+        console.warn(`[SyncProjectToDisk] Local copy error from ${localDir}:`, cpErr.message);
+      }
     }
   }
 
@@ -166,7 +174,9 @@ export async function POST(
     // pdfExists is only true when THIS invocation produced a fresh file.
     const pdfName = path.basename(mainFile).replace(/\.tex$/, ".pdf");
     const pdfPath = path.join(workDir, pdfName);
+    const subDirPdfPath = path.join(path.dirname(mainFilePath), pdfName);
     try { if (fs.existsSync(pdfPath)) fs.unlinkSync(pdfPath); } catch {}
+    try { if (fs.existsSync(subDirPdfPath)) fs.unlinkSync(subDirPdfPath); } catch {}
 
     // Use latexmk if available (handles bibtex/biber automatically)
     const latexmkPath = "/usr/bin/latexmk";
@@ -204,7 +214,17 @@ export async function POST(
     const log = (result.stdout + "\n" + result.stderr).trim();
 
     // Check PDF was produced by THIS compile run (stale files deleted above)
-    const pdfExists = fs.existsSync(pdfPath);
+    let pdfExists = fs.existsSync(pdfPath);
+    if (!pdfExists && fs.existsSync(subDirPdfPath)) {
+      try {
+        fs.copyFileSync(subDirPdfPath, pdfPath);
+        pdfExists = true;
+      } catch {}
+    } else if (pdfExists && !fs.existsSync(subDirPdfPath)) {
+      try {
+        fs.copyFileSync(pdfPath, subDirPdfPath);
+      } catch {}
+    }
 
     if (!pdfExists) {
       // Parse errors from log

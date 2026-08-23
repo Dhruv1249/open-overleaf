@@ -814,6 +814,14 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
     fs.writeFileSync(targetFullPath, content, "utf-8");
 
+    try {
+      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
+      fs.writeFileSync(compileWorkPath, content, "utf-8");
+    } catch (workDirErr: any) {
+      console.warn(`[MCP Server] Note: could not write to compile workdir:`, workDirErr.message);
+    }
+
     if (userGhToken) {
       try {
         await syncWithWebUIAPI(
