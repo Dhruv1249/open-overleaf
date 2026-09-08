@@ -39,8 +39,11 @@ export async function GET(req: Request) {
   }
 
   const payload = { id: user.id, login: user.login, name: user.name, access_token: accessToken };
-  const secret = process.env.SESSION_SECRET || "dev-secret";
-  const token = jwt.sign(payload, secret, { expiresIn: "7d" });
+  const sessionSecret = process.env.SESSION_SECRET;
+  if (!sessionSecret) {
+    return NextResponse.redirect(new URL("/login?error=server_configuration", origin));
+  }
+  const token = jwt.sign(payload, sessionSecret, { expiresIn: "7d" });
 
   const res = NextResponse.redirect(new URL("/", origin));
   res.cookies.set({

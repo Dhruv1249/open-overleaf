@@ -73,13 +73,12 @@ export async function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  // 2. Retrieve session cookie
   const sessionCookie = request.cookies.get("oo_session")?.value;
-  const secret = process.env.SESSION_SECRET || "dev-secret";
+  const sessionSecret = process.env.SESSION_SECRET;
 
   let hasValidSession = false;
-  if (sessionCookie) {
-    const payload = await verifyJwt(sessionCookie, secret);
+  if (sessionCookie && sessionSecret) {
+    const payload = await verifyJwt(sessionCookie, sessionSecret);
     if (payload) {
       hasValidSession = true;
     }

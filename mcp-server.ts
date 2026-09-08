@@ -175,15 +175,22 @@ async function getPDFPageCount(pdfFilePath: string): Promise<number> {
 
   return 0;
 }
-const SESSION_SECRET = process.env.SESSION_SECRET || "";
 const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || `http://127.0.0.1:${process.env.PORT || "8080"}`;
 
 /**
  * Generates a JWT system cookie for Next.js Web UI API calls, embedding the caller's specific GitHub access_token if provided.
  */
 function getSystemAuthCookie(userAccessToken?: string): string {
+  const allowedGitHubUsername = process.env.ALLOW_GITHUB_USERNAME;
+  if (!allowedGitHubUsername) {
+    throw new Error("ALLOW_GITHUB_USERNAME environment variable is not configured");
+  }
+  const sessionSecret = process.env.SESSION_SECRET;
+  if (!sessionSecret) {
+    throw new Error("SESSION_SECRET environment variable is not configured");
+  }
   const payload: any = {
-    username: process.env.ALLOW_GITHUB_USERNAME || "Dhruv1249",
+    username: allowedGitHubUsername,
   };
   const effectiveToken =
     userAccessToken ||
@@ -192,7 +199,7 @@ function getSystemAuthCookie(userAccessToken?: string): string {
   if (effectiveToken) {
     payload.access_token = effectiveToken;
   }
-  const token = jwt.sign(payload, SESSION_SECRET);
+  const token = jwt.sign(payload, sessionSecret);
   return `oo_session=${token}`;
 }
 
