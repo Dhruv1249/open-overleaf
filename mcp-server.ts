@@ -266,7 +266,6 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
         ghProjects = webUiRes.projects.map((item: any) => item.name);
       }
     } catch {
-      // Ignore list projects error
     }
 
     const mergedProjects = Array.from(new Set([...localEntries, ...ghProjects]));

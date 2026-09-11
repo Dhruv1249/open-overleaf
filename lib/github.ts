@@ -45,7 +45,6 @@ export async function readFileAtPath(path: string, req: Request) {
     `/contents/${encodePath(path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
     req
   );
-  // data.content is a base64 string. Empty files have content === "" (falsy but valid).
   if (data && data.content != null) {
     return Buffer.from(data.content, "base64").toString("utf8");
   }
@@ -129,7 +128,6 @@ export async function listAllFilesInDir(
   const results: Array<{ path: string; sha: string }> = [];
   for (const entry of entries) {
     if (entry.type === "file") {
-      // entry.path is the full repo-relative path returned by GitHub
       const meta = await ghFetch(
         `/contents/${encodePath(entry.path)}?ref=${process.env.DEFAULT_BRANCH || "main"}`,
         req
