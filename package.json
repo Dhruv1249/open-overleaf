@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "mcp": "node --experimental-strip-types mcp-server.ts"
+    "mcp": "node --experimental-strip-types mcp-server.ts",
+    "test": "node --experimental-strip-types --test tests/mcp-server.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

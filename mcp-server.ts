@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -10,6 +11,7 @@ import * as path from "path";
 import * as http from "http";
 import { exec, execFile } from "child_process";
 import { promisify } from "util";
+import { fileURLToPath } from "url";
 
 import jwt from "jsonwebtoken";
 import * as crypto from "crypto";
@@ -225,7 +227,7 @@ async function syncWithWebUIAPI(method: string, apiPath: string, body?: any, use
 /**
  * Core execution engine carrying out individual MCP tool logic.
  */
-async function executeMCPTool(name: string, toolArguments: Record<string, any>): Promise<any> {
+export async function executeMCPTool(name: string, toolArguments: Record<string, any>): Promise<any> {
   console.log(`[MCP Server] Call received for tool: "${name}" | Args:`, JSON.stringify(toolArguments));
   try {
     const result = await executeMCPToolInner(name, toolArguments);
@@ -877,7 +879,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 /**
  * Initializes and configures the Model Context Protocol Server with LaTeX management tools.
  */
-function createMCPServer(): Server {
+export function createMCPServer(): Server {
   const serverInstance = new Server(
     {
       name: "open-overleaf-mcp-server",
@@ -1202,26 +1204,28 @@ function createMCPServer(): Server {
 }
 
 const activeSseTransportsMap = new Map<string, SSEServerTransport>();
+const activeStreamableTransportsMap = new Map<string, StreamableHTTPServerTransport>();
 
 /**
- * Handles HTTP Tool Execution requests and SSE endpoints.
+ * Handles incoming HTTP requests for REST tool execution, SSE, and Streamable HTTP transports.
  */
-async function handleHttpRequest(
+export async function handleHttpRequest(
   request: http.IncomingMessage,
-  response: http.ServerResponse,
-  serverInstance: Server
+  response: http.ServerResponse
 ): Promise<void> {
   const requestUrl = request.url || "/";
-  console.log(`[MCP Server HTTP] Request: ${request.method} ${requestUrl}`);
+  const parsedUrl = new URL(requestUrl, `http://${request.headers.host || "localhost"}`);
+  const normalizedPathname = parsedUrl.pathname;
+  console.log(`[MCP Server HTTP] Request: ${request.method} ${normalizedPathname}`);
 
   try {
-    const authHeader = (request.headers["authorization"] || "").trim();
-    if (!authHeader.startsWith("Bearer ")) {
+    const authorizationHeader = (request.headers["authorization"] || "").trim();
+    if (!authorizationHeader.startsWith("Bearer ")) {
       response.writeHead(401, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ error: "Unauthorized: Missing Bearer token in Authorization header" }));
       return;
     }
-    const cleanIncomingToken = authHeader.slice(7).trim();
+    const cleanIncomingToken = authorizationHeader.slice(7).trim();
     let isAuthorized = false;
     try {
       const activeMCPToken = getEffectiveMCPToken();
@@ -1229,7 +1233,6 @@ async function handleHttpRequest(
         isAuthorized = true;
       }
     } catch {
-      // getEffectiveMCPToken might throw if not configured
     }
 
     if (!isAuthorized && process.env.OVERLEAF_MCP_TOKEN) {
@@ -1265,24 +1268,7 @@ async function handleHttpRequest(
     return;
   }
 
-  if (request.method === "GET" && requestUrl.startsWith("/sse")) {
-    const sseTransport = new SSEServerTransport("/message", response);
-    activeSseTransportsMap.set(sseTransport.sessionId, sseTransport);
-    await serverInstance.connect(sseTransport);
-    return;
-  }
-
-  if (request.method === "POST" && requestUrl.startsWith("/message")) {
-    const urlObject = new URL(requestUrl, `http://${request.headers.host}`);
-    const sessionId = urlObject.searchParams.get("sessionId");
-    if (sessionId && activeSseTransportsMap.has(sessionId)) {
-      const transportInstance = activeSseTransportsMap.get(sessionId)!;
-      await transportInstance.handlePostMessage(request, response);
-      return;
-    }
-  }
-
-  if (request.method === "POST" && requestUrl === "/api/mcp/tool") {
+  if (request.method === "POST" && normalizedPathname === "/api/mcp/tool") {
     let requestBodyRaw = "";
     request.on("data", (chunk) => {
       requestBodyRaw += chunk;
@@ -1311,24 +1297,101 @@ async function handleHttpRequest(
     return;
   }
 
+  if (request.method === "POST" && normalizedPathname.startsWith("/message")) {
+    const sessionId = parsedUrl.searchParams.get("sessionId");
+    if (sessionId && activeSseTransportsMap.has(sessionId)) {
+      const transportInstance = activeSseTransportsMap.get(sessionId)!;
+      await transportInstance.handlePostMessage(request, response);
+      return;
+    }
+    response.writeHead(404, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: "Session not found" }));
+    return;
+  }
+
+  const isMcpEndpoint =
+    normalizedPathname === "/sse" ||
+    normalizedPathname === "/mcp" ||
+    normalizedPathname === "/";
+
+  if (isMcpEndpoint) {
+    const incomingSessionId = (request.headers["mcp-session-id"] as string | undefined)?.trim();
+
+    if (incomingSessionId) {
+      const existingTransport = activeStreamableTransportsMap.get(incomingSessionId);
+      if (!existingTransport) {
+        response.writeHead(404, { "Content-Type": "application/json" });
+        response.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            error: {
+              code: -32001,
+              message: "Session not found",
+            },
+            id: null,
+          })
+        );
+        return;
+      }
+      await existingTransport.handleRequest(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && (request.headers["accept"] || "").includes("text/event-stream")) {
+      const sseTransport = new SSEServerTransport("/message", response);
+      activeSseTransportsMap.set(sseTransport.sessionId, sseTransport);
+      sseTransport.onclose = () => {
+        activeSseTransportsMap.delete(sseTransport.sessionId);
+      };
+      const sessionServerInstance = createMCPServer();
+      await sessionServerInstance.connect(sseTransport);
+      return;
+    }
+
+    if (request.method === "POST") {
+      const streamableTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => crypto.randomUUID(),
+        onsessioninitialized: (newSessionId: string) => {
+          activeStreamableTransportsMap.set(newSessionId, streamableTransport);
+        },
+      });
+
+      streamableTransport.onclose = () => {
+        if (streamableTransport.sessionId) {
+          activeStreamableTransportsMap.delete(streamableTransport.sessionId);
+        }
+      };
+
+      const sessionServerInstance = createMCPServer();
+      await sessionServerInstance.connect(streamableTransport);
+      await streamableTransport.handleRequest(request, response);
+      return;
+    }
+
+    if (request.method === "GET") {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "healthy", service: "open-overleaf-mcp" }));
+      return;
+    }
+  }
+
   response.writeHead(404, { "Content-Type": "application/json" });
   response.end(JSON.stringify({ error: "Endpoint not found" }));
 }
 
 /**
- * Main application entrypoint starting Stdio and HTTP MCP transports.
+ * Main application entrypoint starting Stdio or HTTP MCP transports.
  */
 async function startServer(): Promise<void> {
-  const mcpServerInstance = createMCPServer();
-
   if (process.argv.includes("--stdio")) {
+    const stdioServerInstance = createMCPServer();
     const stdioTransport = new StdioServerTransport();
-    await mcpServerInstance.connect(stdioTransport);
+    await stdioServerInstance.connect(stdioTransport);
     return;
   }
 
   const httpServerInstance = http.createServer((request, response) => {
-    handleHttpRequest(request, response, mcpServerInstance);
+    handleHttpRequest(request, response);
   });
 
   httpServerInstance.listen(MCP_PORT, () => {
@@ -1336,7 +1399,16 @@ async function startServer(): Promise<void> {
   });
 }
 
-startServer().catch((fatalError) => {
-  console.error("Fatal MCP Server error:", fatalError);
-  process.exit(1);
-});
+const currentFilePath = fileURLToPath(import.meta.url);
+const executionArgument = process.argv[1] ? path.resolve(process.argv[1]) : "";
+const isDirectExecution =
+  executionArgument === currentFilePath ||
+  executionArgument.endsWith("mcp-server.ts") ||
+  executionArgument.endsWith("mcp-server.js");
+
+if (isDirectExecution) {
+  startServer().catch((fatalError) => {
+    console.error("Fatal MCP Server error:", fatalError);
+    process.exit(1);
+  });
+}
