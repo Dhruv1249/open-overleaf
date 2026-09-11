@@ -90,7 +90,7 @@ COPY --chown=node:node texlab-bridge.js ./
 COPY --chown=node:node mcp-server.ts ./
 COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 
-RUN mkdir -p /app/projects && chown -R node:node /app/projects
+RUN mkdir -p /app/projects /tmp/oo-compile && chown -R node:node /app/projects /tmp/oo-compile && chmod 777 /tmp/oo-compile
 
 RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nnode --experimental-strip-types mcp-server.ts &\nexec node server.js\n' > start.sh \
     && chmod +x start.sh \

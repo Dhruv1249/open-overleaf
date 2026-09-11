@@ -12,7 +12,6 @@ services:
       - .env.local
     volumes:
       - open_overleaf_projects:/app/projects
-      - open_overleaf_compile:/tmp/oo-compile
     restart: unless-stopped
     ulimits:
       nofile:
@@ -25,4 +24,3 @@ services:
 
 volumes:
   open_overleaf_projects:
-  open_overleaf_compile:
