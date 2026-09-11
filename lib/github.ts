@@ -1,13 +1,18 @@
 import { verifySessionFromRequest } from "./session";
 
-// Encode each path segment individually, preserving forward slashes
+/**
+ * Encodes each path segment individually while preserving directory separators.
+ */
 function encodePath(path: string): string {
   return path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
 }
 
 async function ghFetch(path: string, req: Request, opts: { method?: string; body?: any } = {}) {
   const session = verifySessionFromRequest(req);
-  const token = session?.access_token as string | undefined;
+  const token =
+    (session?.access_token as string | undefined) ||
+    process.env.GITHUB_TOKEN ||
+    process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
   const owner = process.env.GITHUB_SINGLE_REPO_OWNER;
   const repo = process.env.GITHUB_SINGLE_REPO_NAME;
   if (!owner || !repo) throw new Error("GITHUB_SINGLE_REPO_OWNER and GITHUB_SINGLE_REPO_NAME must be set");

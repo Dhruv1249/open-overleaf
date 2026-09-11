@@ -10,6 +10,9 @@ services:
       - "3202:3202"
     env_file:
       - .env.local
+    volumes:
+      - open_overleaf_projects:/app/projects
+      - open_overleaf_compile:/tmp/oo-compile
     restart: unless-stopped
     ulimits:
       nofile:
@@ -19,3 +22,7 @@ services:
       resources:
         limits:
           memory: 2G
+
+volumes:
+  open_overleaf_projects:
+  open_overleaf_compile:

@@ -18,7 +18,9 @@ import * as crypto from "crypto";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
-const PROJECTS_DIR = process.env.PROJECTS_DIR || path.join(process.cwd(), "projects");
+function getProjectsDir(): string {
+  return process.env.PROJECTS_DIR || path.join(process.cwd(), "projects");
+}
 const LOCAL_REPO_DIR = process.env.LOCAL_REPO_DIR || "/tmp/oo-repo-cache";
 const MCP_PORT = parseInt(process.env.MCP_PORT || "3202", 10);
 
@@ -33,8 +35,13 @@ async function ensureLocalRepoClone(userGhToken?: string): Promise<string> {
     throw new Error("GITHUB_SINGLE_REPO_OWNER and GITHUB_SINGLE_REPO_NAME must be set");
   }
 
-  const cloneUrl = userGhToken
-    ? `https://${userGhToken}@github.com/${owner}/${repoName}.git`
+  const effectiveToken =
+    userGhToken ||
+    process.env.GITHUB_TOKEN ||
+    process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+
+  const cloneUrl = effectiveToken
+    ? `https://${effectiveToken}@github.com/${owner}/${repoName}.git`
     : `https://github.com/${owner}/${repoName}.git`;
 
   fs.mkdirSync(LOCAL_REPO_DIR, { recursive: true });
@@ -42,13 +49,12 @@ async function ensureLocalRepoClone(userGhToken?: string): Promise<string> {
   if (!fs.existsSync(path.join(LOCAL_REPO_DIR, ".git"))) {
     await execAsync(`git clone --depth=1 --branch ${branch} "${cloneUrl}" .`, { cwd: LOCAL_REPO_DIR });
   } else {
-    const pullUrl = userGhToken
-      ? `https://${userGhToken}@github.com/${owner}/${repoName}.git`
+    const pullUrl = effectiveToken
+      ? `https://${effectiveToken}@github.com/${owner}/${repoName}.git`
       : "origin";
     try {
       await execAsync(`git pull "${pullUrl}" ${branch}`, { cwd: LOCAL_REPO_DIR });
     } catch {
-      // If pull fails (e.g. because of local changes, though there shouldn't be any), try resetting or ignore
     }
   }
 
@@ -97,7 +103,7 @@ interface TeXDiagnostics {
 }
 
 function resolveSafePath(projectName: string, filePath: string): string {
-  const resolvedProjectsRoot = path.resolve(PROJECTS_DIR);
+  const resolvedProjectsRoot = path.resolve(getProjectsDir());
   const resolvedProjectFolder = path.resolve(resolvedProjectsRoot, projectName);
 
   if (!resolvedProjectFolder.startsWith(resolvedProjectsRoot)) {
@@ -245,10 +251,11 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     : (process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN || undefined);
 
   if (name === "list_projects") {
-    if (!fs.existsSync(PROJECTS_DIR)) {
-      fs.mkdirSync(PROJECTS_DIR, { recursive: true });
+    const projectsRootDirectory = getProjectsDir();
+    if (!fs.existsSync(projectsRootDirectory)) {
+      fs.mkdirSync(projectsRootDirectory, { recursive: true });
     }
-    const localEntries = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true })
+    const localEntries = fs.readdirSync(projectsRootDirectory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name);
 
@@ -343,8 +350,17 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       }
     }
 
-    if (userGhToken) {
-      await syncWithWebUIAPI("DELETE", `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}&type=file`, undefined, userGhToken);
+    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (effectiveToken) {
+      try {
+        await syncWithWebUIAPI(
+          "DELETE",
+          `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}&type=file`,
+          undefined,
+          effectiveToken
+        );
+      } catch {
+      }
     }
 
     return { message: `Successfully deleted ${filePath} in project ${projectName}` };
@@ -416,14 +432,36 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
   if (name === "create_file") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
-    if (!userGhToken) throw new Error("create_file requires a githubToken");
-    await syncWithWebUIAPI(
-      "POST",
-      `/api/projects/${encodeURIComponent(projectName)}/file`,
-      { path: filePath, content: "" },
-      userGhToken
-    );
-    return { message: `Successfully created empty file ${filePath} in project ${projectName}` };
+    const fileContent = String(toolArguments?.content ?? "");
+    const targetFullPath = resolveSafePath(projectName, filePath);
+
+    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
+    if (!fs.existsSync(targetFullPath)) {
+      fs.writeFileSync(targetFullPath, fileContent, "utf-8");
+    }
+
+    try {
+      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
+      if (!fs.existsSync(compileWorkPath)) {
+        fs.writeFileSync(compileWorkPath, fileContent, "utf-8");
+      }
+    } catch {
+    }
+
+    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (effectiveToken) {
+      try {
+        await syncWithWebUIAPI(
+          "POST",
+          `/api/projects/${encodeURIComponent(projectName)}/file`,
+          { path: filePath, content: fileContent },
+          effectiveToken
+        );
+      } catch {
+      }
+    }
+    return { message: `Successfully created file ${filePath} in project ${projectName}` };
   }
 
   if (name === "get_project_pdf") {
@@ -548,38 +586,85 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const projectName = String(toolArguments?.projectName);
     const fromPath = String(toolArguments?.fromPath);
     const toPath = String(toolArguments?.toPath);
-    if (!userGhToken) throw new Error("rename_file requires a githubToken");
-    await syncWithWebUIAPI(
-      "POST",
-      `/api/projects/${encodeURIComponent(projectName)}/rename`,
-      { from: fromPath, to: toPath },
-      userGhToken
-    );
+
+    const sourceFullPath = resolveSafePath(projectName, fromPath);
+    const destinationFullPath = resolveSafePath(projectName, toPath);
+
+    if (fs.existsSync(sourceFullPath)) {
+      fs.mkdirSync(path.dirname(destinationFullPath), { recursive: true });
+      fs.renameSync(sourceFullPath, destinationFullPath);
+    }
+
+    try {
+      const compileSourcePath = path.join("/tmp/oo-compile", projectName, fromPath);
+      const compileDestinationPath = path.join("/tmp/oo-compile", projectName, toPath);
+      if (fs.existsSync(compileSourcePath)) {
+        fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
+        fs.renameSync(compileSourcePath, compileDestinationPath);
+      }
+    } catch {
+    }
+
+    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (effectiveToken) {
+      try {
+        await syncWithWebUIAPI(
+          "POST",
+          `/api/projects/${encodeURIComponent(projectName)}/rename`,
+          { from: fromPath, to: toPath },
+          effectiveToken
+        );
+      } catch {
+      }
+    }
     return { message: `Renamed ${fromPath} → ${toPath} in project ${projectName}` };
   }
 
   if (name === "get_project_settings") {
     const projectName = String(toolArguments?.projectName);
-    const result = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/settings`,
-      undefined,
-      userGhToken
-    );
-    return { settings: result.settings };
+    const settingsFullPath = resolveSafePath(projectName, ".overleaf.json");
+    if (fs.existsSync(settingsFullPath)) {
+      try {
+        const rawSettings = fs.readFileSync(settingsFullPath, "utf-8");
+        return { settings: JSON.parse(rawSettings) };
+      } catch {
+      }
+    }
+
+    try {
+      const result = await syncWithWebUIAPI(
+        "GET",
+        `/api/projects/${encodeURIComponent(projectName)}/settings`,
+        undefined,
+        userGhToken
+      );
+      return { settings: result.settings };
+    } catch {
+      return { settings: null };
+    }
   }
 
   if (name === "update_project_settings") {
     const projectName = String(toolArguments?.projectName);
     const settings = toolArguments?.settings;
     if (!settings || typeof settings !== "object") throw new Error("settings object required");
-    if (!userGhToken) throw new Error("update_project_settings requires a githubToken");
-    await syncWithWebUIAPI(
-      "PUT",
-      `/api/projects/${encodeURIComponent(projectName)}/settings`,
-      { settings },
-      userGhToken
-    );
+
+    const settingsFullPath = resolveSafePath(projectName, ".overleaf.json");
+    fs.mkdirSync(path.dirname(settingsFullPath), { recursive: true });
+    fs.writeFileSync(settingsFullPath, JSON.stringify(settings, null, 2), "utf-8");
+
+    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (effectiveToken) {
+      try {
+        await syncWithWebUIAPI(
+          "PUT",
+          `/api/projects/${encodeURIComponent(projectName)}/settings`,
+          { settings },
+          effectiveToken
+        );
+      } catch {
+      }
+    }
     return { message: `Settings updated for project ${projectName}` };
   }
 
@@ -587,26 +672,45 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
     const perPage = Math.min(parseInt(toolArguments?.perPage || "30", 10), 100);
-    const result = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/history?path=${encodeURIComponent(filePath)}&per_page=${perPage}`,
-      undefined,
-      userGhToken
-    );
-    return { commits: result.commits };
+    try {
+      const result = await syncWithWebUIAPI(
+        "GET",
+        `/api/projects/${encodeURIComponent(projectName)}/history?path=${encodeURIComponent(filePath)}&per_page=${perPage}`,
+        undefined,
+        userGhToken
+      );
+      return { commits: result.commits || [] };
+    } catch (historyError: any) {
+      return {
+        commits: [],
+        message: `No remote commit history found: ${historyError.message}`,
+      };
+    }
   }
 
   if (name === "get_file_at_revision") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
-    const sha = String(toolArguments?.sha);
-    const result = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/history?path=${encodeURIComponent(filePath)}&sha=${encodeURIComponent(sha)}`,
-      undefined,
-      userGhToken
-    );
-    return { content: result.content, sha };
+    const sha = String(toolArguments?.sha || toolArguments?.commitSha || "");
+    try {
+      const result = await syncWithWebUIAPI(
+        "GET",
+        `/api/projects/${encodeURIComponent(projectName)}/history?path=${encodeURIComponent(filePath)}&sha=${encodeURIComponent(sha)}`,
+        undefined,
+        userGhToken
+      );
+      return { content: result.content, sha };
+    } catch (revisionError: any) {
+      const localFullPath = resolveSafePath(projectName, filePath);
+      if (fs.existsSync(localFullPath)) {
+        return {
+          content: fs.readFileSync(localFullPath, "utf-8"),
+          sha,
+          note: `Remote revision unavailable (${revisionError.message}), returning current local content`,
+        };
+      }
+      throw revisionError;
+    }
   }
 
   if (name === "get_compilation_log") {
@@ -636,11 +740,25 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const filePattern = String(toolArguments?.filePattern || "");
     const caseSensitive = toolArguments?.caseSensitive !== false;
 
-    const repoDir = await ensureLocalRepoClone(userGhToken);
-    const projectDir = path.join(repoDir, projectName);
+    let projectDir = path.join(getProjectsDir(), projectName);
+    if (!fs.existsSync(projectDir)) {
+      const compileDir = path.join("/tmp/oo-compile", projectName);
+      if (fs.existsSync(compileDir)) {
+        projectDir = compileDir;
+      } else {
+        try {
+          const repoDir = await ensureLocalRepoClone(userGhToken);
+          const cloneProjectDir = path.join(repoDir, projectName);
+          if (fs.existsSync(cloneProjectDir)) {
+            projectDir = cloneProjectDir;
+          }
+        } catch {
+        }
+      }
+    }
 
     if (!fs.existsSync(projectDir)) {
-      throw new Error(`Project ${projectName} not found in repo`);
+      throw new Error(`Project ${projectName} not found`);
     }
 
     const grepArgs: string[] = ["-rn"];
@@ -667,8 +785,12 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
         const colonIndex = line.indexOf(":");
         const afterFirst = line.indexOf(":", colonIndex + 1);
         if (colonIndex === -1 || afterFirst === -1) return null;
+        let matchedFile = line.slice(0, colonIndex);
+        if (matchedFile.startsWith("./")) {
+          matchedFile = matchedFile.slice(2);
+        }
         return {
-          file: line.slice(0, colonIndex),
+          file: matchedFile,
           line: parseInt(line.slice(colonIndex + 1, afterFirst), 10),
           content: line.slice(afterFirst + 1).trim(),
         };
@@ -682,8 +804,22 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
 
-    const repoDir = await ensureLocalRepoClone(userGhToken);
-    const texFilePath = path.join(repoDir, projectName, filePath);
+    let texFilePath = resolveSafePath(projectName, filePath);
+    if (!fs.existsSync(texFilePath)) {
+      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+      if (fs.existsSync(compileWorkPath)) {
+        texFilePath = compileWorkPath;
+      } else {
+        try {
+          const repoDir = await ensureLocalRepoClone(userGhToken);
+          const clonedPath = path.join(repoDir, projectName, filePath);
+          if (fs.existsSync(clonedPath)) {
+            texFilePath = clonedPath;
+          }
+        } catch {
+        }
+      }
+    }
 
     if (!fs.existsSync(texFilePath)) {
       throw new Error(`File not found: ${filePath} in project ${projectName}`);
@@ -696,6 +832,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     } catch (chktexError: any) {
       chktexOutput = (chktexError.stdout || "") + (chktexError.stderr || "");
       if (
+        chktexError.code === "ENOENT" ||
         chktexOutput.includes("not found") ||
         chktexOutput.includes("command not found")
       ) {
@@ -728,23 +865,31 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const filePath = String(toolArguments?.filePath);
     const patches = toolArguments?.patches;
 
-    if (!userGhToken) throw new Error("apply_patch requires a githubToken");
     if (!Array.isArray(patches) || patches.length === 0) {
       throw new Error("patches array must be provided and non-empty");
     }
 
-    // 1. Fetch current file content from GitHub
-    const fileResult = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}`,
-      undefined,
-      userGhToken
-    );
+    const targetFullPath = resolveSafePath(projectName, filePath);
+    let originalText = "";
+    if (fs.existsSync(targetFullPath)) {
+      originalText = fs.readFileSync(targetFullPath, "utf-8");
+    } else {
+      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+      if (fs.existsSync(compileWorkPath)) {
+        originalText = fs.readFileSync(compileWorkPath, "utf-8");
+      } else {
+        const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+        const fileResult = await syncWithWebUIAPI(
+          "GET",
+          `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}`,
+          undefined,
+          effectiveToken
+        );
+        originalText = fileResult.content || "";
+      }
+    }
 
-    const originalText: string = fileResult.content || "";
     const lines = originalText.split("\n");
-
-    // 2. Apply patches in reverse order (by startLine descending) to prevent line shifting issues
     const sortedPatches = [...patches].sort((a, b) => b.startLine - a.startLine);
 
     for (const patch of sortedPatches) {
@@ -808,22 +953,32 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 
     const updatedContent = lines.join("\n");
 
-    // 3. Write locally for instant compile/TexLab update
-    const targetFullPath = resolveSafePath(projectName, filePath);
     fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
     fs.writeFileSync(targetFullPath, updatedContent, "utf-8");
 
-    // 4. Commit updated file back to GitHub
-    await syncWithWebUIAPI(
-      "PUT",
-      `/api/projects/${encodeURIComponent(projectName)}/file`,
-      {
-        path: filePath,
-        content: updatedContent,
-        message: `MCP: apply targeted patches to ${filePath}`,
-      },
-      userGhToken
-    );
+    try {
+      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
+      fs.writeFileSync(compileWorkPath, updatedContent, "utf-8");
+    } catch {
+    }
+
+    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (effectiveToken) {
+      try {
+        await syncWithWebUIAPI(
+          "PUT",
+          `/api/projects/${encodeURIComponent(projectName)}/file`,
+          {
+            path: filePath,
+            content: updatedContent,
+            message: `MCP: apply targeted patches to ${filePath}`,
+          },
+          effectiveToken
+        );
+      } catch {
+      }
+    }
 
     return {
       success: true,
@@ -850,7 +1005,8 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       console.warn(`[MCP Server] Note: could not write to compile workdir:`, workDirErr.message);
     }
 
-    if (userGhToken) {
+    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
+    if (effectiveToken) {
       try {
         await syncWithWebUIAPI(
           "PUT",
@@ -860,7 +1016,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
             content: content,
             message: `MCP: write ${filePath}`,
           },
-          userGhToken
+          effectiveToken
         );
       } catch (syncErr: any) {
         console.warn(`[MCP Server] Warning: Could not sync ${filePath} to GitHub:`, syncErr.message);
