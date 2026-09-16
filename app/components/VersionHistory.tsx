@@ -123,7 +123,7 @@ export default function VersionHistory({
       const data = await res.json();
       if (data.ok) {
         const sha7 = selected.slice(0, 7);
-        const src  = `/api/projects/${encodeURIComponent(project)}/preview-at-sha?key=${sha7}&file=${encodeURIComponent(data.pdfName ?? "main.pdf")}`;
+        const src  = `/api/projects/${encodeURIComponent(project)}/preview-at-sha?key=${sha7}&file=${encodeURIComponent(data.pdfName ?? "main.pdf")}#pagemode=none&navpanes=0`;
         setPdfSrc(src);
         setPdfState("ready");
       } else {

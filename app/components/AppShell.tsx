@@ -158,7 +158,7 @@ function PdfPanel({
   const targetFile = (settings.compileTarget === "root" && settings.rootFile) ? settings.rootFile : relMf;
 
   const pdfSrc = project && targetFile && pdfKey > 0
-    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}`
+    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}#pagemode=none&navpanes=0`
     : null;
 
   const spinning = compileState === "syncing" || compileState === "compiling";
@@ -1540,7 +1540,7 @@ export default function AppShell() {
             currentContent={fileContent}
             currentPdfSrc={
               project && mainFile && pdfKey > 0
-                ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}`
+                ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(mainFile)}&t=${pdfKey}#pagemode=none&navpanes=0`
                 : null
             }
             engine={compilerSettings.engine}
