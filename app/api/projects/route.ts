@@ -1,110 +1,74 @@
 import { NextResponse, NextRequest } from "next/server";
-import {
-  listTopLevelDirectories,
-  readFileAtPath,
-  putFileAtPath,
-  deleteDirectoryAtPath,
-} from "../../../lib/github";
-import { requireSession } from "../../../lib/session";
+import { listProjects, resolveSafeProjectPath, commitPullAndPush } from "@/lib/git";
+import { requireSession } from "@/lib/session";
 import fs from "fs";
 import path from "path";
 
-// GET /api/projects — list all projects (top-level dirs)
 export async function GET(req: Request) {
   try {
-    let dirs: Array<{ name: string; path: string }> = [];
-    try {
-      dirs = await listTopLevelDirectories(req);
-    } catch {
-      dirs = [];
-    }
+    const authResult = requireSession(req);
+    if ("error" in authResult) return authResult.error;
 
-    const candidateRoots = [
-      process.env.PROJECTS_DIR,
-      path.join(process.cwd(), "projects"),
-      "/app/projects",
-      "/tmp/open-overleaf-projects",
-    ].filter(Boolean) as string[];
-
-    for (const root of candidateRoots) {
-      if (fs.existsSync(root)) {
-        try {
-          const localDirs = fs.readdirSync(root, { withFileTypes: true })
-            .filter(d => d.isDirectory() && !d.name.startsWith("."))
-            .map(d => ({ name: d.name, path: d.name }));
-          for (const ld of localDirs) {
-            if (!dirs.some(d => d.name === ld.name)) {
-              dirs.push(ld);
-            }
-          }
-        } catch {}
-      }
-    }
-
-    const projects = [];
-    for (const d of dirs) {
-      const manifestPath = `${d.name}/.open-overleaf/project.json`;
-      let manifest = null;
+    const projects = listProjects().map((name) => {
+      const settingsPath = path.join(resolveSafeProjectPath(name, ".overleaf.json"));
+      let manifest: object | null = null;
       try {
-        const content = await readFileAtPath(manifestPath, req);
-        if (content) manifest = JSON.parse(content);
+        if (fs.existsSync(settingsPath)) {
+          manifest = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+        }
       } catch {
-        // ignore — no manifest is fine
+        manifest = null;
       }
-      projects.push({ name: d.name, manifest });
-    }
+      return { name, manifest };
+    });
+
     return NextResponse.json({ projects });
-  } catch (e: any) {
-    return NextResponse.json({ error: e.message || String(e) }, { status: 500 });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message || String(error) }, { status: 500 });
   }
 }
 
-// POST /api/projects — create a new project (top-level directory on GitHub)
-// body: { name: string, description?: string }
 export async function POST(req: NextRequest) {
   try {
     const authResult = requireSession(req as unknown as Request);
     if ("error" in authResult) return authResult.error;
+
     const body = await req.json();
     const { name, description = "" } = body;
-    if (!name || typeof name !== "string" || !name.trim())
+    if (!name || typeof name !== "string" || !name.trim()) {
       return NextResponse.json({ ok: false, error: "name is required" }, { status: 400 });
+    }
 
     const safeName = name.trim().replace(/[^a-zA-Z0-9_\-. ]/g, "").trim();
-    if (!safeName)
+    if (!safeName) {
       return NextResponse.json({ ok: false, error: "invalid project name" }, { status: 400 });
+    }
 
-    // Check if already exists
-    try {
-      const dirs = await listTopLevelDirectories(req as unknown as Request);
-      if (dirs.find((d) => d.name === safeName))
-        return NextResponse.json({ ok: false, error: `Project "${safeName}" already exists.` }, { status: 409 });
-    } catch { /* ignore */ }
+    const projectPath = resolveSafeProjectPath(safeName, "");
+    if (fs.existsSync(projectPath)) {
+      return NextResponse.json({ ok: false, error: `Project "${safeName}" already exists.` }, { status: 409 });
+    }
 
-    // Create .gitkeep so the folder exists
-    await putFileAtPath(
-      `${safeName}/.gitkeep`,
-      "",
-      `Create project ${safeName}`,
-      req as unknown as Request
-    );
+    fs.mkdirSync(projectPath, { recursive: true });
 
-    // Create default project.json manifest
     const manifest = {
       name: safeName,
-      description: description || "",
+      description,
       branch: process.env.DEFAULT_BRANCH || "main",
       compiler: "xelatex",
       bibliography: "biber",
       autoCompileMode: "debounced",
       debounceSeconds: 2,
     };
-    await putFileAtPath(
-      `${safeName}/.open-overleaf/project.json`,
-      JSON.stringify(manifest, null, 2),
-      `Init project manifest for ${safeName}`,
-      req as unknown as Request
-    );
+
+    const manifestPath = path.join(projectPath, ".open-overleaf", "project.json");
+    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+
+    const gitkeepPath = path.join(projectPath, ".gitkeep");
+    fs.writeFileSync(gitkeepPath, "", "utf-8");
+
+    await commitPullAndPush(`feat: create project ${safeName}`);
 
     return NextResponse.json({ ok: true, name: safeName });
   } catch (err: any) {
@@ -112,17 +76,24 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// DELETE /api/projects?name= — delete an entire project directory from GitHub
 export async function DELETE(req: NextRequest) {
   try {
     const authResult = requireSession(req as unknown as Request);
     if ("error" in authResult) return authResult.error;
+
     const url = new URL(req.url);
     const name = url.searchParams.get("name");
-    if (!name)
+    if (!name) {
       return NextResponse.json({ ok: false, error: "name query required" }, { status: 400 });
+    }
 
-    await deleteDirectoryAtPath(name, req as unknown as Request);
+    const projectPath = resolveSafeProjectPath(name, "");
+    if (fs.existsSync(projectPath)) {
+      fs.rmSync(projectPath, { recursive: true, force: true });
+    }
+
+    await commitPullAndPush(`chore: delete project ${name}`);
+
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });

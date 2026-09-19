@@ -9,107 +9,115 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import * as http from "http";
-import { exec, execFile } from "child_process";
+import { execFile } from "child_process";
 import { promisify } from "util";
 import { fileURLToPath } from "url";
-
-import jwt from "jsonwebtoken";
 import * as crypto from "crypto";
 
-const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
+const MCP_PORT = parseInt(process.env.MCP_PORT || "3202", 10);
+const DEPLOY_KEY_PATH = process.env.DEPLOY_KEY_PATH || "/run/secrets/deploy_key";
+const GIT_AUTHOR_NAME = process.env.GIT_AUTHOR_NAME || "open-overleaf-mcp";
+const GIT_AUTHOR_EMAIL = process.env.GIT_AUTHOR_EMAIL || "mcp@open-overleaf.local";
+const DEFAULT_BRANCH = process.env.DEFAULT_BRANCH || "main";
+const GITHUB_REPO_OWNER = process.env.GITHUB_SINGLE_REPO_OWNER || "";
+const GITHUB_REPO_NAME = process.env.GITHUB_SINGLE_REPO_NAME || "";
+
+/*
+ * Serializes all git write operations so concurrent MCP calls never corrupt the working tree.
+ */
+let gitOperationQueue: Promise<void> = Promise.resolve();
+
 function getProjectsDir(): string {
   return process.env.PROJECTS_DIR || path.join(process.cwd(), "projects");
 }
-const LOCAL_REPO_DIR = process.env.LOCAL_REPO_DIR || "/tmp/oo-repo-cache";
-const MCP_PORT = parseInt(process.env.MCP_PORT || "3202", 10);
 
-/**
- * Clones the single GitHub repo locally on demand, and pulls latest updates to prevent rate limits.
+/*
+ * Builds the GIT_SSH_COMMAND environment string that points git at the repo-scoped deploy key.
+ * The deploy key grants push/pull access only to the single overleaf-projects repository.
  */
-async function ensureLocalRepoClone(userGhToken?: string): Promise<string> {
-  const owner = process.env.GITHUB_SINGLE_REPO_OWNER;
-  const repoName = process.env.GITHUB_SINGLE_REPO_NAME;
-  const branch = process.env.DEFAULT_BRANCH || "main";
-  if (!owner || !repoName) {
+function buildSshCommandEnv(): Record<string, string> {
+  return {
+    GIT_SSH_COMMAND: `ssh -i ${DEPLOY_KEY_PATH} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null`,
+    GIT_AUTHOR_NAME,
+    GIT_AUTHOR_EMAIL,
+    GIT_COMMITTER_NAME: GIT_AUTHOR_NAME,
+    GIT_COMMITTER_EMAIL: GIT_AUTHOR_EMAIL,
+  };
+}
+
+/*
+ * Returns true when the projects directory is a git working tree.
+ */
+function isGitRepo(repoDir: string): boolean {
+  return fs.existsSync(path.join(repoDir, ".git"));
+}
+
+/*
+ * Ensures the projects directory is a fully initialized git clone of the GitHub repo.
+ * Called once at startup. Subsequent syncs happen per-mutation via pullAndPush.
+ */
+async function ensureRepoCloned(): Promise<void> {
+  const projectsDir = getProjectsDir();
+  if (isGitRepo(projectsDir)) {
+    return;
+  }
+  if (!GITHUB_REPO_OWNER || !GITHUB_REPO_NAME) {
     throw new Error("GITHUB_SINGLE_REPO_OWNER and GITHUB_SINGLE_REPO_NAME must be set");
   }
-
-  const effectiveToken =
-    userGhToken ||
-    process.env.GITHUB_TOKEN ||
-    process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-
-  const cloneUrl = effectiveToken
-    ? `https://${effectiveToken}@github.com/${owner}/${repoName}.git`
-    : `https://github.com/${owner}/${repoName}.git`;
-
-  fs.mkdirSync(LOCAL_REPO_DIR, { recursive: true });
-
-  if (!fs.existsSync(path.join(LOCAL_REPO_DIR, ".git"))) {
-    await execAsync(`git clone --depth=1 --branch ${branch} "${cloneUrl}" .`, { cwd: LOCAL_REPO_DIR });
-  } else {
-    const pullUrl = effectiveToken
-      ? `https://${effectiveToken}@github.com/${owner}/${repoName}.git`
-      : "origin";
-    try {
-      await execAsync(`git pull "${pullUrl}" ${branch}`, { cwd: LOCAL_REPO_DIR });
-    } catch {
-    }
-  }
-
-  return LOCAL_REPO_DIR;
+  fs.mkdirSync(projectsDir, { recursive: true });
+  const sshRemote = `git@github.com:${GITHUB_REPO_OWNER}/${GITHUB_REPO_NAME}.git`;
+  await execFileAsync(
+    "git",
+    ["clone", "--branch", DEFAULT_BRANCH, sshRemote, "."],
+    { cwd: projectsDir, env: { ...process.env, ...buildSshCommandEnv() } }
+  );
+  console.log(`[MCP Git] Cloned ${sshRemote} into ${projectsDir}`);
 }
 
-function getEffectiveMCPToken(): string {
-  if (process.env.OVERLEAF_MCP_TOKEN) {
-    return process.env.OVERLEAF_MCP_TOKEN;
-  }
-
-  const secretString =
-    process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET;
-  if (!secretString) {
-    throw new Error(
-      "Neither OVERLEAF_MCP_TOKEN nor OVERLEAF_MCP_SECRET or SESSION_SECRET is configured"
+/*
+ * Stages all changes, commits with the given message, pulls remote changes via rebase,
+ * then pushes. If the pull or push fails, the error propagates — callers treat it as fatal.
+ * All git mutations are serialized through gitOperationQueue to prevent concurrent conflicts.
+ */
+async function commitPullAndPush(commitMessage: string): Promise<void> {
+  gitOperationQueue = gitOperationQueue.then(async () => {
+    const repoDir = getProjectsDir();
+    const sshEnv = { ...process.env, ...buildSshCommandEnv() };
+    await execFileAsync("git", ["add", "-A"], { cwd: repoDir });
+    const { stdout: statusOutput } = await execFileAsync("git", ["status", "--porcelain"], { cwd: repoDir });
+    if (!statusOutput.trim()) {
+      return;
+    }
+    await execFileAsync(
+      "git",
+      ["commit", "-m", commitMessage, "--author", `${GIT_AUTHOR_NAME} <${GIT_AUTHOR_EMAIL}>`],
+      { cwd: repoDir, env: sshEnv }
     );
-  }
-
-  let ghTokenHash = process.env.GITHUB_TOKEN_HASH || "";
-  if (!ghTokenHash) {
-    const rawSecret = process.env.GITHUB_CLIENT_SECRET || "";
-    if (!rawSecret) {
-      throw new Error(
-        "GITHUB_TOKEN_HASH or GITHUB_CLIENT_SECRET must be configured"
-      );
-    }
-    ghTokenHash = crypto.createHash("sha256").update(rawSecret).digest("hex");
-  }
-  const repoName = process.env.GITHUB_SINGLE_REPO_NAME || "overleaf-projects";
-
-  const rawCombined = `${secretString}:${ghTokenHash}:${repoName}`;
-  return crypto.createHash("sha256").update(rawCombined).digest("hex");
+    await execFileAsync(
+      "git",
+      ["pull", "--rebase", "origin", DEFAULT_BRANCH],
+      { cwd: repoDir, env: sshEnv }
+    );
+    await execFileAsync(
+      "git",
+      ["push", "origin", DEFAULT_BRANCH],
+      { cwd: repoDir, env: sshEnv }
+    );
+    console.log(`[MCP Git] Committed and pushed: ${commitMessage}`);
+  });
+  return gitOperationQueue;
 }
 
-interface DiagnosticError {
-  line?: number;
-  message: string;
-  snippet?: string;
-}
-
-interface TeXDiagnostics {
-  hasErrors: boolean;
-  errors: DiagnosticError[];
-  missingPackages: string[];
-}
-
+/*
+ * Enforces that the resolved path stays within the project subdirectory, preventing traversal attacks.
+ */
 function resolveSafePath(projectName: string, filePath: string): string {
   const resolvedProjectsRoot = path.resolve(getProjectsDir());
   const resolvedProjectFolder = path.resolve(resolvedProjectsRoot, projectName);
 
   if (!resolvedProjectFolder.startsWith(resolvedProjectsRoot)) {
-    throw new Error(
-      `Security Violation: Access denied for project directory ${projectName}`
-    );
+    throw new Error(`Security Violation: Access denied for project directory ${projectName}`);
   }
 
   const resolvedTargetFile = path.resolve(resolvedProjectFolder, filePath);
@@ -120,57 +128,12 @@ function resolveSafePath(projectName: string, filePath: string): string {
   return resolvedTargetFile;
 }
 
-/**
- * Parses raw LaTeX stdout and stderr logs into structured error line numbers and messages.
- */
-function parseTeXDiagnostics(stdoutOutput: string, stderrOutput: string): TeXDiagnostics {
-  const errorList: DiagnosticError[] = [];
-  const missingPackageSet = new Set<string>();
 
-  const logLines = (stdoutOutput + "\n" + stderrOutput).split("\n");
-  for (let index = 0; index < logLines.length; index++) {
-    const currentLine = logLines[index];
-
-    if (currentLine.startsWith("! ")) {
-      const errorMessage = currentLine.substring(2).trim();
-      let lineNumber: number | undefined = undefined;
-      let codeSnippet = "";
-
-      for (let lookahead = 1; lookahead <= 5 && index + lookahead < logLines.length; lookahead++) {
-        const nextLine = logLines[index + lookahead];
-        const lineMatch = nextLine.match(/^l\.(\d+)/);
-        if (lineMatch) {
-          lineNumber = parseInt(lineMatch[1], 10);
-          codeSnippet = nextLine.trim();
-          break;
-        }
-      }
-
-      errorList.push({
-        line: lineNumber,
-        message: errorMessage,
-        snippet: codeSnippet,
-      });
-    }
-
-    const packageMatch = currentLine.match(/LaTeX Error: File `([^']+)' not found/);
-    if (packageMatch) {
-      missingPackageSet.add(packageMatch[1]);
-    }
-  }
-
-  return {
-    hasErrors: errorList.length > 0,
-    errors: errorList,
-    missingPackages: Array.from(missingPackageSet),
-  };
-}
 
 async function getPDFPageCount(pdfFilePath: string): Promise<number> {
   if (!fs.existsSync(pdfFilePath)) {
     return 0;
   }
-
   try {
     const { stdout } = await execFileAsync("pdfinfo", [pdfFilePath]);
     const pageMatch = stdout.match(/Pages:\s+(\d+)/);
@@ -180,64 +143,52 @@ async function getPDFPageCount(pdfFilePath: string): Promise<number> {
   } catch {
     return 0;
   }
-
   return 0;
 }
+
+interface LocalFileEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  type: string;
+  sizeBytes: number;
+}
+
+/*
+ * Recursively lists files and directories under a given local directory.
+ * Excludes hidden entries (names starting with ".") to avoid exposing .git internals.
+ */
+function listLocalFilesRecursively(absoluteDir: string, relativeBase: string): LocalFileEntry[] {
+  const entries: LocalFileEntry[] = [];
+  if (!fs.existsSync(absoluteDir)) {
+    return entries;
+  }
+  for (const dirent of fs.readdirSync(absoluteDir, { withFileTypes: true })) {
+    if (dirent.name.startsWith(".")) {
+      continue;
+    }
+    const relativePath = relativeBase ? `${relativeBase}/${dirent.name}` : dirent.name;
+    if (dirent.isDirectory()) {
+      entries.push({ name: dirent.name, path: relativePath, isDirectory: true, type: "dir", sizeBytes: 0 });
+      entries.push(...listLocalFilesRecursively(path.join(absoluteDir, dirent.name), relativePath));
+    } else {
+      const sizeBytes = fs.statSync(path.join(absoluteDir, dirent.name)).size;
+      entries.push({ name: dirent.name, path: relativePath, isDirectory: false, type: "file", sizeBytes });
+    }
+  }
+  return entries;
+}
+
 const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || `http://127.0.0.1:${process.env.PORT || "8080"}`;
 
-/**
- * Generates a JWT system cookie for Next.js Web UI API calls, embedding the caller's specific GitHub access_token if provided.
- */
-function getSystemAuthCookie(userAccessToken?: string): string {
-  const allowedGitHubUsername = process.env.ALLOW_GITHUB_USERNAME;
-  if (!allowedGitHubUsername) {
-    throw new Error("ALLOW_GITHUB_USERNAME environment variable is not configured");
-  }
-  const sessionSecret = process.env.SESSION_SECRET;
-  if (!sessionSecret) {
-    throw new Error("SESSION_SECRET environment variable is not configured");
-  }
-  const payload: any = {
-    username: allowedGitHubUsername,
-  };
-  const effectiveToken =
-    userAccessToken ||
-    process.env.GITHUB_TOKEN ||
-    process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-  if (effectiveToken) {
-    payload.access_token = effectiveToken;
-  }
-  const token = jwt.sign(payload, sessionSecret);
-  return `oo_session=${token}`;
-}
-
-/**
- * Calls Next.js Web UI API endpoints using the caller's specific GitHub token for persistent GitHub synchronization.
- */
-async function syncWithWebUIAPI(method: string, apiPath: string, body?: any, userAccessToken?: string): Promise<any> {
-  const response = await fetch(`${INTERNAL_APP_URL}${apiPath}`, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: getSystemAuthCookie(userAccessToken),
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || data?.ok === false || data?.error) {
-    throw new Error(`GitHub Sync ${method} ${apiPath} failed (HTTP ${response.status}): ${data?.error || JSON.stringify(data)}`);
-  }
-  return data;
-}
-
-/**
- * Core execution engine carrying out individual MCP tool logic.
+/*
+ * Core execution engine carrying out individual MCP tool logic against the local git working tree.
  */
 export async function executeMCPTool(name: string, toolArguments: Record<string, any>): Promise<any> {
   console.log(`[MCP Server] Call received for tool: "${name}" | Args:`, JSON.stringify(toolArguments));
   try {
     const result = await executeMCPToolInner(name, toolArguments);
-    console.log(`[MCP Server] Tool "${name}" execution succeeded | Result:`, JSON.stringify(result));
+    console.log(`[MCP Server] Tool "${name}" execution succeeded`);
     return result;
   } catch (error: any) {
     console.error(`[MCP Server] Tool "${name}" execution failed | Error:`, error.message || error);
@@ -246,64 +197,35 @@ export async function executeMCPTool(name: string, toolArguments: Record<string,
 }
 
 async function executeMCPToolInner(name: string, toolArguments: Record<string, any>): Promise<any> {
-  const userGhToken = toolArguments?.githubToken
-    ? String(toolArguments.githubToken)
-    : (process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN || undefined);
+  const projectsDir = getProjectsDir();
 
   if (name === "list_projects") {
-    const projectsRootDirectory = getProjectsDir();
-    if (!fs.existsSync(projectsRootDirectory)) {
-      fs.mkdirSync(projectsRootDirectory, { recursive: true });
+    if (!fs.existsSync(projectsDir)) {
+      fs.mkdirSync(projectsDir, { recursive: true });
     }
-    const localEntries = fs.readdirSync(projectsRootDirectory, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+    const projects = fs.readdirSync(projectsDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
       .map((entry) => entry.name);
-
-    let ghProjects: string[] = [];
-    try {
-      const webUiRes = await syncWithWebUIAPI("GET", "/api/projects", undefined, userGhToken);
-      if (Array.isArray(webUiRes?.projects)) {
-        ghProjects = webUiRes.projects.map((item: any) => item.name);
-      }
-    } catch {
-    }
-
-    const mergedProjects = Array.from(new Set([...localEntries, ...ghProjects]));
-    return { projects: mergedProjects };
+    return { projects };
   }
 
   if (name === "list_files") {
     const projectName = String(toolArguments?.projectName);
     const subDirectory = String(toolArguments?.subDir || "");
-    const queryString = subDirectory
-      ? `?path=${encodeURIComponent(subDirectory)}`
-      : "";
-    const result = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/tree${queryString}`,
-      undefined,
-      userGhToken
-    );
-    const formattedFiles = (result.entries || []).map((entry: any) => ({
-      name: entry.name,
-      path: entry.path,
-      isDirectory: entry.type === "dir",
-      type: entry.type,
-      sizeBytes: entry.size || 0,
-    }));
-    return { files: formattedFiles };
+    const absoluteProjectDir = resolveSafePath(projectName, subDirectory || ".");
+    const entries = listLocalFilesRecursively(absoluteProjectDir, subDirectory);
+    return { files: entries };
   }
 
   if (name === "read_project_file") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
-    const result = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}`,
-      undefined,
-      userGhToken
-    );
-    return { content: result.content };
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    if (!fs.existsSync(absoluteFilePath)) {
+      throw new Error(`File not found: ${filePath} in project ${projectName}`);
+    }
+    const content = fs.readFileSync(absoluteFilePath, "utf-8");
+    return { content };
   }
 
   if (name === "read_file_lines") {
@@ -311,26 +233,20 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const filePath = String(toolArguments?.filePath);
     const startLineNumber = parseInt(toolArguments?.startLine || "1", 10);
     const endLineNumber = parseInt(toolArguments?.endLine || "100", 10);
-
-    const result = await syncWithWebUIAPI(
-      "GET",
-      `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}`,
-      undefined,
-      userGhToken
-    );
-    const fullContent = result.content || "";
-    const contentLines = fullContent.split("\n");
-
-    const slicedLines = contentLines.slice(
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    if (!fs.existsSync(absoluteFilePath)) {
+      throw new Error(`File not found: ${filePath} in project ${projectName}`);
+    }
+    const allLines = fs.readFileSync(absoluteFilePath, "utf-8").split("\n");
+    const slicedLines = allLines.slice(
       Math.max(0, startLineNumber - 1),
-      Math.min(contentLines.length, endLineNumber)
+      Math.min(allLines.length, endLineNumber)
     );
-
     return {
-      filePath: filePath,
+      filePath,
       startLine: startLineNumber,
       endLine: endLineNumber,
-      totalLines: contentLines.length,
+      totalLines: allLines.length,
       linesContent: slicedLines.join("\n"),
     };
   }
@@ -338,46 +254,269 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
   if (name === "delete_file") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
-    const targetFullPath = resolveSafePath(projectName, filePath);
-
-    if (fs.existsSync(targetFullPath)) {
-      const stats = fs.statSync(targetFullPath);
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    if (fs.existsSync(absoluteFilePath)) {
+      const stats = fs.statSync(absoluteFilePath);
       if (stats.isDirectory()) {
-        fs.rmSync(targetFullPath, { recursive: true, force: true });
+        fs.rmSync(absoluteFilePath, { recursive: true, force: true });
       } else {
-        fs.unlinkSync(targetFullPath);
+        fs.unlinkSync(absoluteFilePath);
       }
     }
-
-    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (effectiveToken) {
-      try {
-        await syncWithWebUIAPI(
-          "DELETE",
-          `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}&type=file`,
-          undefined,
-          effectiveToken
-        );
-      } catch {
-      }
-    }
-
+    await commitPullAndPush(`mcp: delete ${projectName}/${filePath}`);
     return { message: `Successfully deleted ${filePath} in project ${projectName}` };
+  }
+
+  if (name === "create_file") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const fileContent = String(toolArguments?.content ?? "");
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    if (fs.existsSync(absoluteFilePath)) {
+      throw new Error(`File already exists: ${filePath} in project ${projectName}`);
+    }
+    fs.mkdirSync(path.dirname(absoluteFilePath), { recursive: true });
+    fs.writeFileSync(absoluteFilePath, fileContent, "utf-8");
+    await commitPullAndPush(`mcp: create ${projectName}/${filePath}`);
+    return { message: `Successfully created file ${filePath} in project ${projectName}` };
+  }
+
+  if (name === "write_project_file") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const content = String(toolArguments?.content ?? "");
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    fs.mkdirSync(path.dirname(absoluteFilePath), { recursive: true });
+    fs.writeFileSync(absoluteFilePath, content, "utf-8");
+
+    const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+    try {
+      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
+      fs.writeFileSync(compileWorkPath, content, "utf-8");
+    } catch (workDirErr: any) {
+      console.warn(`[MCP Server] Note: could not mirror to compile workdir:`, workDirErr.message);
+    }
+
+    await commitPullAndPush(`mcp: write ${projectName}/${filePath}`);
+    return { success: true, message: `Successfully wrote ${filePath} in project ${projectName}` };
+  }
+
+  if (name === "apply_patch") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const patches = toolArguments?.patches;
+
+    if (!Array.isArray(patches) || patches.length === 0) {
+      throw new Error("patches array must be provided and non-empty");
+    }
+
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    if (!fs.existsSync(absoluteFilePath)) {
+      throw new Error(`File not found: ${filePath} in project ${projectName}`);
+    }
+
+    const originalText = fs.readFileSync(absoluteFilePath, "utf-8");
+    const lines = originalText.split("\n");
+    const sortedPatches = [...patches].sort((a, b) => b.startLine - a.startLine);
+
+    for (const patch of sortedPatches) {
+      const { startLine, endLine, originalContent, newContent } = patch;
+      let actualStartLine = startLine;
+      let actualEndLine = endLine;
+      let matched = false;
+
+      if (startLine >= 1 && endLine <= lines.length && startLine <= endLine) {
+        const actualBlock = lines.slice(startLine - 1, endLine).join("\n");
+        if (actualBlock.trim() === originalContent.trim()) {
+          matched = true;
+        }
+      }
+
+      if (!matched) {
+        for (let offset = -5; offset <= 5; offset++) {
+          if (offset === 0) continue;
+          const shiftedStart = startLine + offset;
+          const shiftedEnd = endLine + offset;
+          if (shiftedStart >= 1 && shiftedEnd <= lines.length && shiftedStart <= shiftedEnd) {
+            const actualBlock = lines.slice(shiftedStart - 1, shiftedEnd).join("\n");
+            if (actualBlock.trim() === originalContent.trim()) {
+              actualStartLine = shiftedStart;
+              actualEndLine = shiftedEnd;
+              matched = true;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!matched) {
+        const normalizedOriginal = originalContent.trim().replace(/\r\n/g, "\n");
+        const joinedFile = lines.join("\n");
+        const matchIndex = joinedFile.indexOf(normalizedOriginal);
+        if (matchIndex !== -1) {
+          const replacedFile =
+            joinedFile.substring(0, matchIndex) +
+            newContent +
+            joinedFile.substring(matchIndex + normalizedOriginal.length);
+          lines.length = 0;
+          lines.push(...replacedFile.split("\n"));
+          continue;
+        }
+      }
+
+      if (!matched) {
+        const actualBlock = lines.slice(startLine - 1, Math.min(endLine, lines.length)).join("\n");
+        throw new Error(
+          `Validation failed for line range [${startLine}, ${endLine}]. ` +
+          `Expected:\n"${originalContent}"\nBut found:\n"${actualBlock}"`
+        );
+      }
+
+      const replacementLines = newContent.split("\n");
+      lines.splice(actualStartLine - 1, actualEndLine - actualStartLine + 1, ...replacementLines);
+    }
+
+    const updatedContent = lines.join("\n");
+    fs.writeFileSync(absoluteFilePath, updatedContent, "utf-8");
+
+    const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
+    try {
+      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
+      fs.writeFileSync(compileWorkPath, updatedContent, "utf-8");
+    } catch {
+    }
+
+    await commitPullAndPush(`mcp: patch ${projectName}/${filePath} (${patches.length} chunk(s))`);
+    return {
+      success: true,
+      message: `Successfully applied ${patches.length} patch(es) to ${filePath}`,
+      originalContent: originalText,
+      updatedContent,
+    };
+  }
+
+  if (name === "rename_file") {
+    const projectName = String(toolArguments?.projectName);
+    const fromPath = String(toolArguments?.fromPath);
+    const toPath = String(toolArguments?.toPath);
+    const absoluteSourcePath = resolveSafePath(projectName, fromPath);
+    const absoluteDestinationPath = resolveSafePath(projectName, toPath);
+    if (!fs.existsSync(absoluteSourcePath)) {
+      throw new Error(`Source not found: ${fromPath} in project ${projectName}`);
+    }
+    fs.mkdirSync(path.dirname(absoluteDestinationPath), { recursive: true });
+    fs.renameSync(absoluteSourcePath, absoluteDestinationPath);
+
+    const compileSourcePath = path.join("/tmp/oo-compile", projectName, fromPath);
+    const compileDestinationPath = path.join("/tmp/oo-compile", projectName, toPath);
+    try {
+      if (fs.existsSync(compileSourcePath)) {
+        fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
+        fs.renameSync(compileSourcePath, compileDestinationPath);
+      }
+    } catch {
+    }
+
+    await commitPullAndPush(`mcp: rename ${projectName}/${fromPath} → ${toPath}`);
+    return { message: `Renamed ${fromPath} → ${toPath} in project ${projectName}` };
+  }
+
+  if (name === "get_project_settings") {
+    const projectName = String(toolArguments?.projectName);
+    const settingsAbsolutePath = resolveSafePath(projectName, ".overleaf.json");
+    if (!fs.existsSync(settingsAbsolutePath)) {
+      return { settings: null };
+    }
+    try {
+      const rawSettings = fs.readFileSync(settingsAbsolutePath, "utf-8");
+      return { settings: JSON.parse(rawSettings) };
+    } catch {
+      return { settings: null };
+    }
+  }
+
+  if (name === "update_project_settings") {
+    const projectName = String(toolArguments?.projectName);
+    const settings = toolArguments?.settings;
+    if (!settings || typeof settings !== "object") {
+      throw new Error("settings object required");
+    }
+    const settingsAbsolutePath = resolveSafePath(projectName, ".overleaf.json");
+    fs.mkdirSync(path.dirname(settingsAbsolutePath), { recursive: true });
+    fs.writeFileSync(settingsAbsolutePath, JSON.stringify(settings, null, 2), "utf-8");
+    await commitPullAndPush(`mcp: update settings for ${projectName}`);
+    return { message: `Settings updated for project ${projectName}` };
+  }
+
+  if (name === "get_file_history") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const perPage = Math.min(parseInt(toolArguments?.perPage || "30", 10), 100);
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    const relativePathInRepo = path.relative(getProjectsDir(), absoluteFilePath);
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        [
+          "log",
+          `--max-count=${perPage}`,
+          "--format=%H%n%an%n%ae%n%ai%n%s%n---",
+          "--",
+          relativePathInRepo,
+        ],
+        { cwd: getProjectsDir() }
+      );
+      const commits = stdout
+        .split("---\n")
+        .map((block) => block.trim())
+        .filter(Boolean)
+        .map((block) => {
+          const [sha, authorName, authorEmail, date, ...messageParts] = block.split("\n");
+          return { sha, authorName, authorEmail, date, message: messageParts.join("\n") };
+        });
+      return { commits };
+    } catch {
+      return { commits: [], message: "No commit history found for this file" };
+    }
+  }
+
+  if (name === "get_file_at_revision") {
+    const projectName = String(toolArguments?.projectName);
+    const filePath = String(toolArguments?.filePath);
+    const sha = String(toolArguments?.sha || toolArguments?.commitSha || "");
+    if (!sha) {
+      throw new Error("sha (commit SHA) is required");
+    }
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
+    const relativePathInRepo = path.relative(getProjectsDir(), absoluteFilePath);
+    try {
+      const { stdout } = await execFileAsync(
+        "git",
+        ["show", `${sha}:${relativePathInRepo}`],
+        { cwd: getProjectsDir() }
+      );
+      return { content: stdout, sha };
+    } catch (revisionError: any) {
+      throw new Error(`Could not retrieve ${filePath} at revision ${sha}: ${revisionError.message}`);
+    }
   }
 
   if (name === "sync_to_drive") {
     const projectName = String(toolArguments?.projectName);
     const mainFile = String(toolArguments?.mainFile || "main.tex");
-    const result = await syncWithWebUIAPI(
-      "POST",
-      "/api/drive/sync",
-      { project: projectName, mainFile },
-      userGhToken
-    );
+    const response = await fetch(`${INTERNAL_APP_URL}/api/drive/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project: projectName, mainFile }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data?.error) {
+      throw new Error(`Drive sync failed: ${data?.error || response.status}`);
+    }
     return {
-      driveUrl: result.webViewLink,
-      fileId: result.fileId,
-      drivePath: result.drivePath,
+      driveUrl: data.webViewLink,
+      fileId: data.fileId,
+      drivePath: data.drivePath,
     };
   }
 
@@ -390,15 +529,12 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     try {
       const response = await fetch(`${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Cookie: getSystemAuthCookie(userGhToken),
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mainFile: entryFilename, engine: engineName }),
       });
       result = await response.json().catch(() => ({}));
       if (!response.ok && response.status !== 422) {
-        throw new Error(`GitHub Sync POST /api/projects/${projectName}/compile failed (HTTP ${response.status}): ${result?.error || JSON.stringify(result)}`);
+        throw new Error(`Compile request failed (HTTP ${response.status}): ${result?.error || JSON.stringify(result)}`);
       }
     } catch (fetchErr: any) {
       if (!result) throw fetchErr;
@@ -407,9 +543,9 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const compiledPdfName = result?.pdfFile || entryFilename.replace(/\.tex$/i, ".pdf");
     let localPdfPath = path.join("/tmp/oo-compile", projectName, compiledPdfName);
     if (!fs.existsSync(localPdfPath)) {
-      const subDirPath = path.join("/tmp/oo-compile", projectName, entryFilename.replace(/\.tex$/i, ".pdf"));
-      if (fs.existsSync(subDirPath)) {
-        localPdfPath = subDirPath;
+      const fallbackPath = path.join("/tmp/oo-compile", projectName, entryFilename.replace(/\.tex$/i, ".pdf"));
+      if (fs.existsSync(fallbackPath)) {
+        localPdfPath = fallbackPath;
       }
     }
     const calculatedPageCount = fs.existsSync(localPdfPath) ? await getPDFPageCount(localPdfPath) : 0;
@@ -428,41 +564,6 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     };
   }
 
-  if (name === "create_file") {
-    const projectName = String(toolArguments?.projectName);
-    const filePath = String(toolArguments?.filePath);
-    const fileContent = String(toolArguments?.content ?? "");
-    const targetFullPath = resolveSafePath(projectName, filePath);
-
-    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
-    if (!fs.existsSync(targetFullPath)) {
-      fs.writeFileSync(targetFullPath, fileContent, "utf-8");
-    }
-
-    try {
-      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
-      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
-      if (!fs.existsSync(compileWorkPath)) {
-        fs.writeFileSync(compileWorkPath, fileContent, "utf-8");
-      }
-    } catch {
-    }
-
-    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (effectiveToken) {
-      try {
-        await syncWithWebUIAPI(
-          "POST",
-          `/api/projects/${encodeURIComponent(projectName)}/file`,
-          { path: filePath, content: fileContent },
-          effectiveToken
-        );
-      } catch {
-      }
-    }
-    return { message: `Successfully created file ${filePath} in project ${projectName}` };
-  }
-
   if (name === "get_project_pdf") {
     const projectName = String(toolArguments?.projectName);
     const pdfFilename = String(toolArguments?.pdfName || "main.pdf");
@@ -470,20 +571,21 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     let compileResult: any = null;
 
     let pdfResponse = await fetch(
-      `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`,
-      { headers: { Cookie: getSystemAuthCookie(userGhToken) } }
+      `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`
     );
 
     if (!pdfResponse.ok) {
-      compileResult = await syncWithWebUIAPI(
-        "POST",
-        `/api/projects/${encodeURIComponent(projectName)}/compile`,
-        { mainFile: texName },
-        userGhToken
-      );
+      compileResult = await fetch(
+        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mainFile: texName }),
+        }
+      ).then((r) => r.json().catch(() => ({})));
+
       pdfResponse = await fetch(
-        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`,
-        { headers: { Cookie: getSystemAuthCookie(userGhToken) } }
+        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`
       );
     }
 
@@ -493,15 +595,11 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 
     const pdfBuffer = Buffer.from(await pdfResponse.arrayBuffer());
     const base64DataString = pdfBuffer.toString("base64");
-
-    const tempDir = path.join("/tmp/oo-compile", projectName);
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    const tempPdfPath = path.join(tempDir, `temp-${Date.now()}-${path.basename(pdfFilename)}`);
+    const tempPdfPath = path.join("/tmp/oo-compile", projectName, `temp-${Date.now()}-${path.basename(pdfFilename)}`);
+    fs.mkdirSync(path.dirname(tempPdfPath), { recursive: true });
     fs.writeFileSync(tempPdfPath, pdfBuffer);
     const totalPages = await getPDFPageCount(tempPdfPath);
-    try { fs.unlinkSync(tempPdfPath); } catch {}
+    try { fs.unlinkSync(tempPdfPath); } catch { }
 
     return {
       fileName: pdfFilename,
@@ -526,33 +624,26 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 
     const pdfFullPath = path.join("/tmp/oo-compile", projectName, pdfFilename);
     if (!fs.existsSync(pdfFullPath)) {
-      compileResult = await syncWithWebUIAPI(
-        "POST",
-        `/api/projects/${encodeURIComponent(projectName)}/compile`,
-        { mainFile: texName },
-        userGhToken
-      );
+      compileResult = await fetch(
+        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mainFile: texName }),
+        }
+      ).then((r) => r.json().catch(() => ({})));
     }
 
     if (!fs.existsSync(pdfFullPath)) {
       throw new Error(`Failed to compile or find PDF ${pdfFilename} in project ${projectName}: ${compileResult?.log || ""}`);
     }
 
-    const temporaryOutputPrefix = path.join(
-      "/tmp/oo-compile",
-      projectName,
-      `preview_p${targetPageNumber}`
-    );
+    const temporaryOutputPrefix = path.join("/tmp/oo-compile", projectName, `preview_p${targetPageNumber}`);
     await execFileAsync("pdftoppm", [
-      "-png",
-      "-r",
-      String(resolutionDPI),
-      "-f",
-      String(targetPageNumber),
-      "-l",
-      String(targetPageNumber),
-      pdfFullPath,
-      temporaryOutputPrefix,
+      "-png", "-r", String(resolutionDPI),
+      "-f", String(targetPageNumber),
+      "-l", String(targetPageNumber),
+      pdfFullPath, temporaryOutputPrefix,
     ]);
 
     const expectedPngPath = `${temporaryOutputPrefix}-${targetPageNumber}.png`;
@@ -565,8 +656,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
 
     const imageBuffer = fs.readFileSync(finalPngPath);
     const imageBase64String = imageBuffer.toString("base64");
-
-    try { fs.unlinkSync(finalPngPath); } catch {}
+    try { fs.unlinkSync(finalPngPath); } catch { }
 
     return {
       fileName: `${path.basename(pdfFilename, ".pdf")}_p${targetPageNumber}.png`,
@@ -579,137 +669,6 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       warningCount: compileResult?.warnings ?? 0,
       log: compileResult?.log ?? "",
     };
-  }
-
-  if (name === "rename_file") {
-    const projectName = String(toolArguments?.projectName);
-    const fromPath = String(toolArguments?.fromPath);
-    const toPath = String(toolArguments?.toPath);
-
-    const sourceFullPath = resolveSafePath(projectName, fromPath);
-    const destinationFullPath = resolveSafePath(projectName, toPath);
-
-    if (fs.existsSync(sourceFullPath)) {
-      fs.mkdirSync(path.dirname(destinationFullPath), { recursive: true });
-      fs.renameSync(sourceFullPath, destinationFullPath);
-    }
-
-    try {
-      const compileSourcePath = path.join("/tmp/oo-compile", projectName, fromPath);
-      const compileDestinationPath = path.join("/tmp/oo-compile", projectName, toPath);
-      if (fs.existsSync(compileSourcePath)) {
-        fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
-        fs.renameSync(compileSourcePath, compileDestinationPath);
-      }
-    } catch {
-    }
-
-    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (effectiveToken) {
-      try {
-        await syncWithWebUIAPI(
-          "POST",
-          `/api/projects/${encodeURIComponent(projectName)}/rename`,
-          { from: fromPath, to: toPath },
-          effectiveToken
-        );
-      } catch {
-      }
-    }
-    return { message: `Renamed ${fromPath} → ${toPath} in project ${projectName}` };
-  }
-
-  if (name === "get_project_settings") {
-    const projectName = String(toolArguments?.projectName);
-    const settingsFullPath = resolveSafePath(projectName, ".overleaf.json");
-    if (fs.existsSync(settingsFullPath)) {
-      try {
-        const rawSettings = fs.readFileSync(settingsFullPath, "utf-8");
-        return { settings: JSON.parse(rawSettings) };
-      } catch {
-      }
-    }
-
-    try {
-      const result = await syncWithWebUIAPI(
-        "GET",
-        `/api/projects/${encodeURIComponent(projectName)}/settings`,
-        undefined,
-        userGhToken
-      );
-      return { settings: result.settings };
-    } catch {
-      return { settings: null };
-    }
-  }
-
-  if (name === "update_project_settings") {
-    const projectName = String(toolArguments?.projectName);
-    const settings = toolArguments?.settings;
-    if (!settings || typeof settings !== "object") throw new Error("settings object required");
-
-    const settingsFullPath = resolveSafePath(projectName, ".overleaf.json");
-    fs.mkdirSync(path.dirname(settingsFullPath), { recursive: true });
-    fs.writeFileSync(settingsFullPath, JSON.stringify(settings, null, 2), "utf-8");
-
-    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (effectiveToken) {
-      try {
-        await syncWithWebUIAPI(
-          "PUT",
-          `/api/projects/${encodeURIComponent(projectName)}/settings`,
-          { settings },
-          effectiveToken
-        );
-      } catch {
-      }
-    }
-    return { message: `Settings updated for project ${projectName}` };
-  }
-
-  if (name === "get_file_history") {
-    const projectName = String(toolArguments?.projectName);
-    const filePath = String(toolArguments?.filePath);
-    const perPage = Math.min(parseInt(toolArguments?.perPage || "30", 10), 100);
-    try {
-      const result = await syncWithWebUIAPI(
-        "GET",
-        `/api/projects/${encodeURIComponent(projectName)}/history?path=${encodeURIComponent(filePath)}&per_page=${perPage}`,
-        undefined,
-        userGhToken
-      );
-      return { commits: result.commits || [] };
-    } catch (historyError: any) {
-      return {
-        commits: [],
-        message: `No remote commit history found: ${historyError.message}`,
-      };
-    }
-  }
-
-  if (name === "get_file_at_revision") {
-    const projectName = String(toolArguments?.projectName);
-    const filePath = String(toolArguments?.filePath);
-    const sha = String(toolArguments?.sha || toolArguments?.commitSha || "");
-    try {
-      const result = await syncWithWebUIAPI(
-        "GET",
-        `/api/projects/${encodeURIComponent(projectName)}/history?path=${encodeURIComponent(filePath)}&sha=${encodeURIComponent(sha)}`,
-        undefined,
-        userGhToken
-      );
-      return { content: result.content, sha };
-    } catch (revisionError: any) {
-      const localFullPath = resolveSafePath(projectName, filePath);
-      if (fs.existsSync(localFullPath)) {
-        return {
-          content: fs.readFileSync(localFullPath, "utf-8"),
-          sha,
-          note: `Remote revision unavailable (${revisionError.message}), returning current local content`,
-        };
-      }
-      throw revisionError;
-    }
   }
 
   if (name === "get_compilation_log") {
@@ -739,23 +698,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const filePattern = String(toolArguments?.filePattern || "");
     const caseSensitive = toolArguments?.caseSensitive !== false;
 
-    let projectDir = path.join(getProjectsDir(), projectName);
-    if (!fs.existsSync(projectDir)) {
-      const compileDir = path.join("/tmp/oo-compile", projectName);
-      if (fs.existsSync(compileDir)) {
-        projectDir = compileDir;
-      } else {
-        try {
-          const repoDir = await ensureLocalRepoClone(userGhToken);
-          const cloneProjectDir = path.join(repoDir, projectName);
-          if (fs.existsSync(cloneProjectDir)) {
-            projectDir = cloneProjectDir;
-          }
-        } catch {
-        }
-      }
-    }
-
+    const projectDir = resolveSafePath(projectName, ".");
     if (!fs.existsSync(projectDir)) {
       throw new Error(`Project ${projectName} not found`);
     }
@@ -767,7 +710,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     if (filePattern) {
       grepArgs.push(`--include=${filePattern}`);
     }
-    grepArgs.push(query, ".");
+    grepArgs.push("--exclude-dir=.git", query, ".");
 
     let grepOutput = "";
     try {
@@ -802,31 +745,15 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
   if (name === "validate_tex") {
     const projectName = String(toolArguments?.projectName);
     const filePath = String(toolArguments?.filePath);
+    const absoluteFilePath = resolveSafePath(projectName, filePath);
 
-    let texFilePath = resolveSafePath(projectName, filePath);
-    if (!fs.existsSync(texFilePath)) {
-      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
-      if (fs.existsSync(compileWorkPath)) {
-        texFilePath = compileWorkPath;
-      } else {
-        try {
-          const repoDir = await ensureLocalRepoClone(userGhToken);
-          const clonedPath = path.join(repoDir, projectName, filePath);
-          if (fs.existsSync(clonedPath)) {
-            texFilePath = clonedPath;
-          }
-        } catch {
-        }
-      }
-    }
-
-    if (!fs.existsSync(texFilePath)) {
+    if (!fs.existsSync(absoluteFilePath)) {
       throw new Error(`File not found: ${filePath} in project ${projectName}`);
     }
 
     let chktexOutput = "";
     try {
-      const result = await execFileAsync("chktex", ["-q", texFilePath]);
+      const result = await execFileAsync("chktex", ["-q", absoluteFilePath]);
       chktexOutput = result.stdout + result.stderr;
     } catch (chktexError: any) {
       chktexOutput = (chktexError.stdout || "") + (chktexError.stderr || "");
@@ -835,10 +762,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
         chktexOutput.includes("not found") ||
         chktexOutput.includes("command not found")
       ) {
-        return {
-          available: false,
-          message: "chktex is not installed in this environment",
-        };
+        return { available: false, message: "chktex is not installed in this environment" };
       }
     }
 
@@ -859,192 +783,17 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     return { available: true, filePath, totalDiagnostics: diagnostics.length, diagnostics };
   }
 
-  if (name === "apply_patch") {
-    const projectName = String(toolArguments?.projectName);
-    const filePath = String(toolArguments?.filePath);
-    const patches = toolArguments?.patches;
-
-    if (!Array.isArray(patches) || patches.length === 0) {
-      throw new Error("patches array must be provided and non-empty");
-    }
-
-    const targetFullPath = resolveSafePath(projectName, filePath);
-    let originalText = "";
-    if (fs.existsSync(targetFullPath)) {
-      originalText = fs.readFileSync(targetFullPath, "utf-8");
-    } else {
-      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
-      if (fs.existsSync(compileWorkPath)) {
-        originalText = fs.readFileSync(compileWorkPath, "utf-8");
-      } else {
-        const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-        const fileResult = await syncWithWebUIAPI(
-          "GET",
-          `/api/projects/${encodeURIComponent(projectName)}/file?path=${encodeURIComponent(filePath)}`,
-          undefined,
-          effectiveToken
-        );
-        originalText = fileResult.content || "";
-      }
-    }
-
-    const lines = originalText.split("\n");
-    const sortedPatches = [...patches].sort((a, b) => b.startLine - a.startLine);
-
-    for (const patch of sortedPatches) {
-      const { startLine, endLine, originalContent, newContent } = patch;
-      let actualStartLine = startLine;
-      let actualEndLine = endLine;
-      let matched = false;
-
-      if (startLine >= 1 && endLine <= lines.length && startLine <= endLine) {
-        const actualBlock = lines.slice(startLine - 1, endLine).join("\n");
-        if (actualBlock.trim() === originalContent.trim()) {
-          matched = true;
-        }
-      }
-
-      if (!matched) {
-        for (let offset = -5; offset <= 5; offset++) {
-          if (offset === 0) continue;
-          const s = startLine + offset;
-          const e = endLine + offset;
-          if (s >= 1 && e <= lines.length && s <= e) {
-            const actualBlock = lines.slice(s - 1, e).join("\n");
-            if (actualBlock.trim() === originalContent.trim()) {
-              actualStartLine = s;
-              actualEndLine = e;
-              matched = true;
-              break;
-            }
-          }
-        }
-      }
-
-      if (!matched) {
-        const normalizedOriginal = originalContent.trim().replace(/\r\n/g, "\n");
-        const joinedFile = lines.join("\n");
-        const matchIndex = joinedFile.indexOf(normalizedOriginal);
-        if (matchIndex !== -1) {
-          const replacedFile =
-            joinedFile.substring(0, matchIndex) +
-            newContent +
-            joinedFile.substring(matchIndex + normalizedOriginal.length);
-          lines.length = 0;
-          lines.push(...replacedFile.split("\n"));
-          continue;
-        }
-      }
-
-      if (!matched) {
-        const actualBlock = lines
-          .slice(startLine - 1, Math.min(endLine, lines.length))
-          .join("\n");
-        throw new Error(
-          `Validation failed for line range [${startLine}, ${endLine}]. ` +
-            `Expected:\n"${originalContent}"\nBut found:\n"${actualBlock}"`
-        );
-      }
-
-      const replacementLines = newContent.split("\n");
-      lines.splice(actualStartLine - 1, actualEndLine - actualStartLine + 1, ...replacementLines);
-    }
-
-    const updatedContent = lines.join("\n");
-
-    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
-    fs.writeFileSync(targetFullPath, updatedContent, "utf-8");
-
-    try {
-      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
-      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
-      fs.writeFileSync(compileWorkPath, updatedContent, "utf-8");
-    } catch {
-    }
-
-    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (effectiveToken) {
-      try {
-        await syncWithWebUIAPI(
-          "PUT",
-          `/api/projects/${encodeURIComponent(projectName)}/file`,
-          {
-            path: filePath,
-            content: updatedContent,
-            message: `MCP: apply targeted patches to ${filePath}`,
-          },
-          effectiveToken
-        );
-      } catch {
-      }
-    }
-
-    return {
-      success: true,
-      message: `Successfully applied ${patches.length} patch(es) to ${filePath}`,
-      originalContent: originalText,
-      updatedContent,
-    };
-  }
-
-  if (name === "write_project_file") {
-    const projectName = String(toolArguments?.projectName);
-    const filePath = String(toolArguments?.filePath);
-    const content = String(toolArguments?.content ?? "");
-
-    const targetFullPath = resolveSafePath(projectName, filePath);
-    fs.mkdirSync(path.dirname(targetFullPath), { recursive: true });
-    fs.writeFileSync(targetFullPath, content, "utf-8");
-
-    try {
-      const compileWorkPath = path.join("/tmp/oo-compile", projectName, filePath);
-      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
-      fs.writeFileSync(compileWorkPath, content, "utf-8");
-    } catch (workDirErr: any) {
-      console.warn(`[MCP Server] Note: could not write to compile workdir:`, workDirErr.message);
-    }
-
-    const effectiveToken = userGhToken || process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN;
-    if (effectiveToken) {
-      try {
-        await syncWithWebUIAPI(
-          "PUT",
-          `/api/projects/${encodeURIComponent(projectName)}/file`,
-          {
-            path: filePath,
-            content: content,
-            message: `MCP: write ${filePath}`,
-          },
-          effectiveToken
-        );
-      } catch (syncErr: any) {
-        console.warn(`[MCP Server] Warning: Could not sync ${filePath} to GitHub:`, syncErr.message);
-      }
-    }
-
-    return {
-      success: true,
-      message: `Successfully wrote ${filePath} in project ${projectName}`,
-    };
-  }
-
   throw new Error(`Unknown MCP tool requested: ${name}`);
 }
 
-/**
+/*
  * Initializes and configures the Model Context Protocol Server with LaTeX management tools.
+ * All tools operate on the local git working tree — no GitHub API calls or tokens required.
  */
 export function createMCPServer(): Server {
   const serverInstance = new Server(
-    {
-      name: "open-overleaf-mcp-server",
-      version: "1.0.0",
-    },
-    {
-      capabilities: {
-        tools: {},
-      },
-    }
+    { name: "open-overleaf-mcp-server", version: "2.0.0" },
+    { capabilities: { tools: {} } }
   );
 
   serverInstance.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -1052,38 +801,36 @@ export function createMCPServer(): Server {
       tools: [
         {
           name: "list_projects",
-          description: "Lists all LaTeX projects stored in open-overleaf.",
+          description: "Lists all LaTeX projects in the local git working tree.",
           inputSchema: { type: "object", properties: {} },
         },
         {
           name: "list_files",
-          description: "Lists files and directories inside a target LaTeX project by fetching the repository tree from GitHub.",
+          description: "Lists all files and directories inside a LaTeX project from the local git working tree.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
               subDir: { type: "string", description: "Optional sub-directory path relative to project root", default: "" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
             },
             required: ["projectName"],
           },
         },
         {
           name: "read_project_file",
-          description: "Reads a .tex or text file from an open-overleaf project in GitHub.",
+          description: "Reads a file from a LaTeX project in the local git working tree.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
               filePath: { type: "string", description: "Relative file path inside project" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
             },
             required: ["projectName", "filePath"],
           },
         },
         {
           name: "read_file_lines",
-          description: "Reads specific line ranges [startLine, endLine] from a file in GitHub.",
+          description: "Reads a specific line range from a project file.",
           inputSchema: {
             type: "object",
             properties: {
@@ -1091,95 +838,127 @@ export function createMCPServer(): Server {
               filePath: { type: "string", description: "Relative file path inside project" },
               startLine: { type: "integer", description: "1-indexed starting line", default: 1 },
               endLine: { type: "integer", description: "1-indexed ending line", default: 100 },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
             },
             required: ["projectName", "filePath"],
           },
         },
-
         {
           name: "delete_file",
-          description: "Deletes a specific file or folder inside a target project on GitHub.",
+          description: "Deletes a file or directory from a project, commits, and pushes.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
-              filePath: { type: "string", description: "Relative path to file/folder for deletion" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
+              filePath: { type: "string", description: "Relative path to file or directory" },
             },
             required: ["projectName", "filePath"],
           },
         },
         {
           name: "create_file",
-          description: "Creates a new empty file in the project. Requires a githubToken.",
+          description: "Creates a new file in a project, commits, and pushes.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
-              filePath: { type: "string", description: "Relative file path to create (e.g. helper_notes.tex)" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
+              filePath: { type: "string", description: "Relative file path to create" },
+              content: { type: "string", description: "Initial file content", default: "" },
             },
-            required: ["projectName", "filePath", "githubToken"],
+            required: ["projectName", "filePath"],
           },
         },
         {
           name: "write_project_file",
-          description: "Writes entire file content to an open-overleaf project both locally and synced to GitHub.",
+          description: "Writes full file content to a project, commits, and pushes.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
               filePath: { type: "string", description: "Relative file path inside project" },
               content: { type: "string", description: "The full text content to write" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write access" },
             },
             required: ["projectName", "filePath", "content"],
           },
         },
         {
+          name: "apply_patch",
+          description: "Applies targeted chunk-based replacements to a file, commits, and pushes. Prefer this over write_project_file for partial edits.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the project" },
+              filePath: { type: "string", description: "Relative file path inside project" },
+              patches: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    startLine: { type: "integer", description: "1-indexed starting line of the block to replace" },
+                    endLine: { type: "integer", description: "1-indexed ending line of the block to replace" },
+                    originalContent: { type: "string", description: "Exact content expected at those lines" },
+                    newContent: { type: "string", description: "Replacement content" },
+                  },
+                  required: ["startLine", "endLine", "originalContent", "newContent"],
+                },
+                description: "List of patch chunks to apply",
+              },
+            },
+            required: ["projectName", "filePath", "patches"],
+          },
+        },
+        {
+          name: "rename_file",
+          description: "Renames or moves a file within a project, commits, and pushes.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: { type: "string", description: "Name of the project" },
+              fromPath: { type: "string", description: "Current relative path" },
+              toPath: { type: "string", description: "New relative path" },
+            },
+            required: ["projectName", "fromPath", "toPath"],
+          },
+        },
+        {
           name: "sync_to_drive",
-          description: "Synchronizes the compiled PDF of the project to Google Drive and returns a stable webViewLink.",
+          description: "Syncs the compiled PDF to Google Drive and returns a stable webViewLink.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
-              mainFile: { type: "string", description: "The main .tex file name to identify compiled PDF", default: "main.tex" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
+              mainFile: { type: "string", description: "Main .tex filename", default: "main.tex" },
             },
             required: ["projectName"],
           },
         },
         {
           name: "compile_project",
-          description: "Triggers LaTeX compilation for an open-overleaf project on the backend, fetching fresh files from GitHub.",
+          description: "Triggers LaTeX compilation for a project.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
               engine: { type: "string", description: "Compilation engine: xelatex, pdflatex, lualatex", default: "xelatex" },
-              entryFile: { type: "string", description: "Target tex file to compile", default: "main.tex" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
+              entryFile: { type: "string", description: "Target .tex file to compile", default: "main.tex" },
             },
             required: ["projectName"],
           },
         },
         {
           name: "get_project_pdf",
-          description: "Retrieves compiled PDF document as base64 encoded binary data.",
+          description: "Retrieves the compiled PDF as base64 encoded data.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the LaTeX project" },
-              pdfName: { type: "string", description: "PDF filename to retrieve", default: "main.pdf" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
+              pdfName: { type: "string", description: "PDF filename", default: "main.pdf" },
             },
             required: ["projectName"],
           },
         },
         {
           name: "get_project_preview_image",
-          description: "Converts a specified PDF page to PNG preview image (base64 string).",
+          description: "Renders a PDF page as a PNG preview image (base64 string).",
           inputSchema: {
             type: "object",
             properties: {
@@ -1191,36 +970,20 @@ export function createMCPServer(): Server {
             required: ["projectName"],
           },
         },
-
-        {
-          name: "rename_file",
-          description: "Renames/moves a file or directory in GitHub via copy-then-delete. Requires a githubToken.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              projectName: { type: "string", description: "Name of the project" },
-              fromPath: { type: "string", description: "Old relative file/directory path inside project" },
-              toPath: { type: "string", description: "New relative file/directory path inside project" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
-            },
-            required: ["projectName", "fromPath", "toPath", "githubToken"],
-          },
-        },
         {
           name: "get_project_settings",
-          description: "Gets the project settings manifest (.overleaf.json) from GitHub.",
+          description: "Reads the project settings manifest (.overleaf.json) from the local git working tree.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
             },
             required: ["projectName"],
           },
         },
         {
           name: "update_project_settings",
-          description: "Updates the project settings manifest (.overleaf.json) in GitHub. Requires a githubToken.",
+          description: "Updates the project settings manifest (.overleaf.json), commits, and pushes.",
           inputSchema: {
             type: "object",
             properties: {
@@ -1232,108 +995,76 @@ export function createMCPServer(): Server {
                   mainFile: { type: "string" },
                   mode: { type: "string" },
                 },
-                description: "Settings object containing keys like engine, mainFile, mode",
+                description: "Settings keys to update",
               },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write on the sync repo" },
             },
-            required: ["projectName", "settings", "githubToken"],
+            required: ["projectName", "settings"],
           },
         },
         {
           name: "get_file_history",
-          description: "Gets commit history for a specific file in a project from GitHub.",
+          description: "Returns git commit history for a specific file using the local git log.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
               filePath: { type: "string", description: "Relative file path inside project" },
-              perPage: { type: "integer", description: "Maximum number of history items to fetch", default: 30 },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
+              perPage: { type: "integer", description: "Maximum number of commits to return", default: 30 },
             },
             required: ["projectName", "filePath"],
           },
         },
         {
           name: "get_file_at_revision",
-          description: "Retrieves the content of a file at a specific commit SHA from GitHub.",
+          description: "Returns the content of a file at a specific commit SHA using git show.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
               filePath: { type: "string", description: "Relative file path inside project" },
               sha: { type: "string", description: "Commit SHA" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read access on the sync repo" },
             },
             required: ["projectName", "filePath", "sha"],
           },
         },
         {
           name: "get_compilation_log",
-          description: "Reads the compilation log file (main.log) from local backend directory.",
+          description: "Reads a LaTeX compilation log file from the compile output directory.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
-              logFile: { type: "string", description: "Name of log file, defaults to main.log", default: "main.log" },
-              startLine: { type: "integer", description: "1-indexed starting line to slice", default: 1 },
-              endLine: { type: "integer", description: "1-indexed ending line to slice" },
+              logFile: { type: "string", description: "Log filename", default: "main.log" },
+              startLine: { type: "integer", description: "1-indexed starting line", default: 1 },
+              endLine: { type: "integer", description: "1-indexed ending line" },
             },
             required: ["projectName"],
           },
         },
         {
           name: "search_in_project",
-          description: "Performs full-text search across project files using a locally cached git clone.",
+          description: "Full-text search across all files in a project using grep on the local working tree.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
               query: { type: "string", description: "String to search for" },
-              filePattern: { type: "string", description: "Glob pattern to filter files, e.g., *.tex" },
-              caseSensitive: { type: "boolean", description: "Whether grep should be case-sensitive", default: true },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT for authentication with the git clone" },
+              filePattern: { type: "string", description: "Glob pattern to filter files, e.g. *.tex" },
+              caseSensitive: { type: "boolean", description: "Whether search is case-sensitive", default: true },
             },
             required: ["projectName", "query"],
           },
         },
         {
           name: "validate_tex",
-          description: "Runs chktex to lint a LaTeX file and retrieve syntax warning/error diagnostics.",
+          description: "Runs chktex to lint a LaTeX file and return syntax diagnostics.",
           inputSchema: {
             type: "object",
             properties: {
               projectName: { type: "string", description: "Name of the project" },
               filePath: { type: "string", description: "Relative file path inside project" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT for authentication with the git clone" },
             },
             required: ["projectName", "filePath"],
-          },
-        },
-        {
-          name: "apply_patch",
-          description: "Applies targeted chunk-based replacements to a file on GitHub without transferring the whole file. Use this instead of overwriting to edit files safely.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              projectName: { type: "string", description: "Name of the project" },
-              filePath: { type: "string", description: "Relative file path inside project" },
-              githubToken: { type: "string", description: "Fine-grained GitHub PAT with Contents read+write access" },
-              patches: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    startLine: { type: "integer", description: "1-indexed starting line number of the block to replace" },
-                    endLine: { type: "integer", description: "1-indexed ending line number of the block to replace" },
-                    originalContent: { type: "string", description: "The exact content expected in the target file at those lines" },
-                    newContent: { type: "string", description: "The replacement content" },
-                  },
-                  required: ["startLine", "endLine", "originalContent", "newContent"],
-                },
-                description: "List of patch chunks to apply",
-              },
-            },
-            required: ["projectName", "filePath", "githubToken", "patches"],
           },
         },
       ],
@@ -1344,9 +1075,7 @@ export function createMCPServer(): Server {
     const { name, arguments: toolArguments } = request.params;
     try {
       const resultData = await executeMCPTool(name, toolArguments || {});
-      return {
-        content: [{ type: "text", text: JSON.stringify(resultData) }],
-      };
+      return { content: [{ type: "text", text: JSON.stringify(resultData) }] };
     } catch (handlerError: any) {
       return {
         content: [{ type: "text", text: `Error executing tool ${name}: ${handlerError.message}` }],
@@ -1358,10 +1087,26 @@ export function createMCPServer(): Server {
   return serverInstance;
 }
 
+function getEffectiveMCPToken(): string {
+  if (process.env.OVERLEAF_MCP_TOKEN) {
+    return process.env.OVERLEAF_MCP_TOKEN;
+  }
+  const secretString = process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET;
+  if (!secretString) {
+    throw new Error("Neither OVERLEAF_MCP_TOKEN nor SESSION_SECRET is configured");
+  }
+  const ghClientSecret = process.env.GITHUB_CLIENT_SECRET || "";
+  const ghHash = ghClientSecret
+    ? crypto.createHash("sha256").update(ghClientSecret).digest("hex")
+    : "";
+  const repoName = process.env.GITHUB_SINGLE_REPO_NAME || "overleaf-projects";
+  return crypto.createHash("sha256").update(`${secretString}:${ghHash}:${repoName}`).digest("hex");
+}
+
 const activeSseTransportsMap = new Map<string, SSEServerTransport>();
 const activeStreamableTransportsMap = new Map<string, StreamableHTTPServerTransport>();
 
-/**
+/*
  * Handles incoming HTTP requests for REST tool execution, SSE, and Streamable HTTP transports.
  */
 export async function handleHttpRequest(
@@ -1377,35 +1122,27 @@ export async function handleHttpRequest(
     const authorizationHeader = (request.headers["authorization"] || "").trim();
     if (!authorizationHeader.startsWith("Bearer ")) {
       response.writeHead(401, { "Content-Type": "application/json" });
-      response.end(JSON.stringify({ error: "Unauthorized: Missing Bearer token in Authorization header" }));
+      response.end(JSON.stringify({ error: "Unauthorized: Missing Bearer token" }));
       return;
     }
-    const cleanIncomingToken = authorizationHeader.slice(7).trim();
+    const incomingToken = authorizationHeader.slice(7).trim();
     let isAuthorized = false;
+
     try {
-      const activeMCPToken = getEffectiveMCPToken();
-      if (cleanIncomingToken === activeMCPToken) {
-        isAuthorized = true;
-      }
-    } catch {
-    }
+      isAuthorized = incomingToken === getEffectiveMCPToken();
+    } catch { }
 
     if (!isAuthorized && process.env.OVERLEAF_MCP_TOKEN) {
-      isAuthorized = cleanIncomingToken === process.env.OVERLEAF_MCP_TOKEN.trim();
-    }
-    if (!isAuthorized && process.env.OVERLEAF_MCP_SECRET) {
-      isAuthorized = cleanIncomingToken === process.env.OVERLEAF_MCP_SECRET.trim();
+      isAuthorized = incomingToken === process.env.OVERLEAF_MCP_TOKEN.trim();
     }
     if (!isAuthorized && process.env.SESSION_SECRET) {
-      isAuthorized = cleanIncomingToken === process.env.SESSION_SECRET.trim();
+      isAuthorized = incomingToken === process.env.SESSION_SECRET.trim();
     }
     if (!isAuthorized && process.env.OVERLEAF_MCP_SECRET) {
-      const hashedSecret = crypto.createHash("sha256").update(process.env.OVERLEAF_MCP_SECRET.trim()).digest("hex");
-      isAuthorized = cleanIncomingToken === hashedSecret;
+      isAuthorized = incomingToken === crypto.createHash("sha256").update(process.env.OVERLEAF_MCP_SECRET.trim()).digest("hex");
     }
     if (!isAuthorized && process.env.SESSION_SECRET) {
-      const hashedSecret = crypto.createHash("sha256").update(process.env.SESSION_SECRET.trim()).digest("hex");
-      isAuthorized = cleanIncomingToken === hashedSecret;
+      isAuthorized = incomingToken === crypto.createHash("sha256").update(process.env.SESSION_SECRET.trim()).digest("hex");
     }
 
     if (!isAuthorized) {
@@ -1415,35 +1152,19 @@ export async function handleHttpRequest(
     }
   } catch (authError: any) {
     response.writeHead(500, { "Content-Type": "application/json" });
-    response.end(
-      JSON.stringify({
-        error: authError.message || "MCP server authentication error",
-      })
-    );
+    response.end(JSON.stringify({ error: authError.message || "MCP authentication error" }));
     return;
   }
 
   if (request.method === "POST" && normalizedPathname === "/api/mcp/tool") {
     let requestBodyRaw = "";
-    request.on("data", (chunk) => {
-      requestBodyRaw += chunk;
-    });
-
+    request.on("data", (chunk) => { requestBodyRaw += chunk; });
     request.on("end", async () => {
       try {
         const parsedBody = JSON.parse(requestBodyRaw);
-        const requestedToolName = parsedBody.tool;
-        const requestedToolArguments = parsedBody.arguments || {};
-
-        const resultData = await executeMCPTool(requestedToolName, requestedToolArguments);
-
+        const resultData = await executeMCPTool(parsedBody.tool, parsedBody.arguments || {});
         response.writeHead(200, { "Content-Type": "application/json" });
-        response.end(
-          JSON.stringify({
-            success: true,
-            result: resultData,
-          })
-        );
+        response.end(JSON.stringify({ success: true, result: resultData }));
       } catch (postError: any) {
         response.writeHead(400, { "Content-Type": "application/json" });
         response.end(JSON.stringify({ success: false, error: postError.message }));
@@ -1455,8 +1176,7 @@ export async function handleHttpRequest(
   if (request.method === "POST" && normalizedPathname.startsWith("/message")) {
     const sessionId = parsedUrl.searchParams.get("sessionId");
     if (sessionId && activeSseTransportsMap.has(sessionId)) {
-      const transportInstance = activeSseTransportsMap.get(sessionId)!;
-      await transportInstance.handlePostMessage(request, response);
+      await activeSseTransportsMap.get(sessionId)!.handlePostMessage(request, response);
       return;
     }
     response.writeHead(404, { "Content-Type": "application/json" });
@@ -1476,16 +1196,7 @@ export async function handleHttpRequest(
       const existingTransport = activeStreamableTransportsMap.get(incomingSessionId);
       if (!existingTransport) {
         response.writeHead(404, { "Content-Type": "application/json" });
-        response.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            error: {
-              code: -32001,
-              message: "Session not found",
-            },
-            id: null,
-          })
-        );
+        response.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null }));
         return;
       }
       await existingTransport.handleRequest(request, response);
@@ -1495,9 +1206,7 @@ export async function handleHttpRequest(
     if (request.method === "GET" && (request.headers["accept"] || "").includes("text/event-stream")) {
       const sseTransport = new SSEServerTransport("/message", response);
       activeSseTransportsMap.set(sseTransport.sessionId, sseTransport);
-      sseTransport.onclose = () => {
-        activeSseTransportsMap.delete(sseTransport.sessionId);
-      };
+      sseTransport.onclose = () => { activeSseTransportsMap.delete(sseTransport.sessionId); };
       const sessionServerInstance = createMCPServer();
       await sessionServerInstance.connect(sseTransport);
       return;
@@ -1510,13 +1219,11 @@ export async function handleHttpRequest(
           activeStreamableTransportsMap.set(newSessionId, streamableTransport);
         },
       });
-
       streamableTransport.onclose = () => {
         if (streamableTransport.sessionId) {
           activeStreamableTransportsMap.delete(streamableTransport.sessionId);
         }
       };
-
       const sessionServerInstance = createMCPServer();
       await sessionServerInstance.connect(streamableTransport);
       await streamableTransport.handleRequest(request, response);
@@ -1534,10 +1241,12 @@ export async function handleHttpRequest(
   response.end(JSON.stringify({ error: "Endpoint not found" }));
 }
 
-/**
- * Main application entrypoint starting Stdio or HTTP MCP transports.
+/*
+ * Main application entrypoint — ensures the repo is cloned before starting Stdio or HTTP transports.
  */
 async function startServer(): Promise<void> {
+  await ensureRepoCloned();
+
   if (process.argv.includes("--stdio")) {
     const stdioServerInstance = createMCPServer();
     const stdioTransport = new StdioServerTransport();

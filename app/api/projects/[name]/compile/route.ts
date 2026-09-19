@@ -1,90 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
-import { verifySessionFromRequest } from "@/lib/session";
-import { listDirectory } from "@/lib/github";
+import { requireSession } from "@/lib/session";
+import { getRepoRoot } from "@/lib/git";
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 
-// ── GitHub file fetch (returns raw Buffer — handles both text and binary) ─────
-async function fetchGitHubFileBuffer(
-  repoPath: string,
-  token: string | undefined
-): Promise<Buffer | null> {
-  const owner = process.env.GITHUB_SINGLE_REPO_OWNER;
-  const repo  = process.env.GITHUB_SINGLE_REPO_NAME;
-  const branch = process.env.DEFAULT_BRANCH || "main";
-  const encoded = repoPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encoded}?ref=${branch}`;
-  const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
-  if (token) headers.Authorization = `token ${token}`;
-  const resp = await fetch(url, { headers });
-  if (!resp.ok) return null;
-  const data = await resp.json();
-  if (data?.content != null) return Buffer.from(data.content, "base64");
-  return null;
-}
-
-// ── Recursively sync all project files to local disk ─────────────────────────
+/*
+ * Copies all files from the local git working tree into the LaTeX compilation work directory.
+ * Client-supplied overrides (unsaved editor content) are applied on top after the copy.
+ */
 async function syncProjectToDisk(
   project: string,
-  token: string | undefined,
-  req: Request,
   destDir: string
 ): Promise<void> {
-  // Sync any locally written MCP files for this project into compilation directory
-  const possibleDirs = [
-    path.join(process.cwd(), "projects", project),
-    path.join("/app/projects", project),
-    path.join("/tmp/open-overleaf-projects", project),
-    process.env.PROJECTS_DIR ? path.join(process.env.PROJECTS_DIR, project) : "",
-  ].filter(Boolean);
-
-  for (const localDir of possibleDirs) {
-    if (fs.existsSync(localDir)) {
-      try {
-        fs.mkdirSync(destDir, { recursive: true });
-        fs.cpSync(localDir, destDir, { recursive: true });
-      } catch (cpErr: any) {
-        console.warn(`[SyncProjectToDisk] Local copy error from ${localDir}:`, cpErr.message);
-      }
-    }
+  const sourceDir = path.join(getRepoRoot(), project);
+  if (fs.existsSync(sourceDir)) {
+    fs.mkdirSync(destDir, { recursive: true });
+    fs.cpSync(sourceDir, destDir, { recursive: true });
   }
-
-  async function syncDir(ghDirPath: string, localDir: string) {
-    fs.mkdirSync(localDir, { recursive: true });
-    let entries: Array<{ name: string; path: string; type: string }> = [];
-    try {
-      entries = await listDirectory(ghDirPath, req);
-    } catch (err: any) {
-      // If folder is not on GitHub yet (e.g. initial project creation), treat as empty
-      if (String(err?.message || "").includes("404")) {
-        entries = [];
-      } else {
-        console.warn(`[SyncProjectToDisk] Warning listing GitHub directory ${ghDirPath}:`, err.message);
-        entries = [];
-      }
-    }
-
-    await Promise.all(
-      entries.map(async (entry: { name: string; path: string; type: string }) => {
-        const localPath = path.join(localDir, entry.name);
-        if (entry.type === "dir") {
-          await syncDir(entry.path, localPath);
-        } else {
-          try {
-            const buf = await fetchGitHubFileBuffer(entry.path, token);
-            if (buf !== null) {
-              fs.mkdirSync(path.dirname(localPath), { recursive: true });
-              fs.writeFileSync(localPath, buf);
-            }
-          } catch (fetchErr: any) {
-            console.warn(`[SyncProjectToDisk] Could not fetch ${entry.path}:`, fetchErr.message);
-          }
-        }
-      })
-    );
-  }
-  await syncDir(project, destDir);
 }
 
 // ── Run a process, capture output, resolve with exit code ─────────────────────
@@ -117,12 +50,8 @@ export async function POST(
 ) {
   const { name: project } = await ctx.params;
 
-  let session: any;
-  try {
-    session = verifySessionFromRequest(req as unknown as Request);
-  } catch {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
+  const authResult = requireSession(req as unknown as Request);
+  if ("error" in authResult) return authResult.error;
 
   const body = await req.json().catch(() => ({}));
   const mainFile: string = body.mainFile || "main.tex";
@@ -148,9 +77,7 @@ export async function POST(
   const workDir = `/tmp/oo-compile/${project}`;
 
   try {
-    // ── Step 1: Sync all project files from GitHub ──────────────────────────
-    const token = (session as any)?.access_token as string | undefined;
-    await syncProjectToDisk(project, token, req as unknown as Request, workDir);
+    await syncProjectToDisk(project, workDir);
 
     // Apply client-side overrides (unsaved content from the editor)
     // This lets auto-compile fire without a GitHub save round-trip.

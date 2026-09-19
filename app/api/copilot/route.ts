@@ -761,10 +761,7 @@ CRITICAL GUIDELINES:
 
                   executedToolSignatures.add(signature);
                   try {
-                    const finalArgs = {
-                      ...toolArgs,
-                      githubToken: userAccessToken || toolArgs?.githubToken,
-                    };
+                    const finalArgs = { ...toolArgs };
 
                     const approvalRequiredTools = [
                       "apply_patch",

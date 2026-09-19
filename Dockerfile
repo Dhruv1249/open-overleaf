@@ -92,7 +92,26 @@ COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 
 RUN mkdir -p /app/projects /tmp/oo-compile && chown -R node:node /app/projects /tmp/oo-compile && chmod 777 /tmp/oo-compile
 
-RUN printf '#!/bin/sh\nnode texlab-bridge.js &\nnode --experimental-strip-types mcp-server.ts &\nexec node server.js\n' > start.sh \
+RUN printf '#!/bin/sh\n\
+set -e\n\
+\n\
+if [ ! -d "/app/projects/.git" ] && [ -f "$DEPLOY_KEY_PATH" ] && [ -n "$GITHUB_SINGLE_REPO_OWNER" ] && [ -n "$GITHUB_SINGLE_REPO_NAME" ]; then\n\
+  echo "[startup] Cloning ${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME} into /app/projects"\n\
+  chmod 600 "$DEPLOY_KEY_PATH"\n\
+  GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \\\n\
+    git clone --branch "${DEFAULT_BRANCH:-main}" \\\n\
+    "git@github.com:${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME}.git" \\\n\
+    /app/projects\n\
+  git -C /app/projects config user.name "${GIT_AUTHOR_NAME:-open-overleaf}"\n\
+  git -C /app/projects config user.email "${GIT_AUTHOR_EMAIL:-mcp@open-overleaf.local}"\n\
+  echo "[startup] Clone complete"\n\
+else\n\
+  echo "[startup] /app/projects already initialized or deploy key not configured, skipping clone"\n\
+fi\n\
+\n\
+node texlab-bridge.js &\n\
+node --experimental-strip-types mcp-server.ts &\n\
+exec node server.js\n' > start.sh \
     && chmod +x start.sh \
     && chown node:node start.sh
 

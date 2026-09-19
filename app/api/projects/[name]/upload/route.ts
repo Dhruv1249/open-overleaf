@@ -1,18 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/session";
-import { putBinaryAtPath, getFileMeta } from "@/lib/github";
+import { writeLocalFileBuffer, commitPullAndPush, resolveSafeProjectPath } from "@/lib/git";
 
 /**
  * POST /api/projects/[name]/upload
  * Content-Type: multipart/form-data
  *
  * Fields:
- *   files[]    — one or more File objects
+ *   files[]    — one or more File objects (text or binary)
  *   targetDir  — optional subdirectory inside the project (e.g. "images")
  *
- * Each file is committed to: <project>/<targetDir>/<file.name>
- * Handles binary files (images, PDFs) correctly via Buffer → base64.
- *
+ * Each file is written to the local git working tree and then committed and pushed.
  * Response: { ok: true, results: [{ path, ok, error? }] }
  */
 export async function POST(
@@ -24,11 +22,14 @@ export async function POST(
   if ("error" in authResult) return authResult.error;
 
   let formData: FormData;
-  try { formData = await req.formData(); }
-  catch (e: any) { return NextResponse.json({ ok: false, error: `Bad form data: ${e.message}` }, { status: 400 }); }
+  try {
+    formData = await req.formData();
+  } catch (error: any) {
+    return NextResponse.json({ ok: false, error: `Bad form data: ${error.message}` }, { status: 400 });
+  }
 
   const targetDir = ((formData.get("targetDir") as string) ?? "").replace(/^\/|\/$/g, "");
-  const files     = formData.getAll("files") as File[];
+  const files = formData.getAll("files") as File[];
 
   if (!files.length) {
     return NextResponse.json({ ok: false, error: "No files provided" }, { status: 400 });
@@ -37,34 +38,32 @@ export async function POST(
   const results: { path: string; ok: boolean; error?: string }[] = [];
 
   for (const file of files) {
-    // webkitRelativePath is set when uploading a folder; fall back to file.name
-    const relativePath = ((file as any).webkitRelativePath as string | undefined)
-      || file.name;
-
-    // Sanitise: prevent path traversal
+    const relativePath = ((file as any).webkitRelativePath as string | undefined) || file.name;
     const safePath = relativePath.replace(/\.\./g, "_").replace(/^\//, "");
-
-    const repoPath = targetDir
-      ? `${project}/${targetDir}/${safePath}`
-      : `${project}/${safePath}`;
+    const projectRelativePath = targetDir ? `${targetDir}/${safePath}` : safePath;
 
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
-
-      // Fetch existing SHA (required for update; absent on first upload)
-      let sha: string | undefined;
-      try {
-        const meta = await getFileMeta(repoPath, req as unknown as Request);
-        sha = meta?.sha;
-      } catch {/* file doesn't exist yet — OK */}
-
-      await putBinaryAtPath(repoPath, buffer, `Upload ${safePath}`, req as unknown as Request, sha);
+      const absolutePath = resolveSafeProjectPath(project, projectRelativePath);
+      writeLocalFileBuffer(absolutePath, buffer);
       results.push({ path: safePath, ok: true });
-    } catch (e: any) {
-      results.push({ path: safePath, ok: false, error: e.message });
+    } catch (error: any) {
+      results.push({ path: safePath, ok: false, error: error.message });
     }
   }
 
-  const allOk = results.every(r => r.ok);
+  const successCount = results.filter((result) => result.ok).length;
+  if (successCount > 0) {
+    try {
+      await commitPullAndPush(`feat: upload ${successCount} file(s) to ${project}/${targetDir || ""}`);
+    } catch (pushError: any) {
+      return NextResponse.json(
+        { ok: false, error: `Files written locally but git push failed: ${pushError.message}`, results },
+        { status: 500 }
+      );
+    }
+  }
+
+  const allOk = results.every((result) => result.ok);
   return NextResponse.json({ ok: allOk, results });
 }

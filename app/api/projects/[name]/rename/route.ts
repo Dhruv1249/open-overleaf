@@ -1,97 +1,50 @@
 import { NextResponse, NextRequest } from "next/server";
 import {
-  getFileMeta,
-  putBinaryAtPath,
-  deleteFileAtPath,
-  listAllFilesInDir,
-  deleteDirectoryAtPath,
-} from "@/lib/github";
+  resolveSafeProjectPath,
+  commitPullAndPush,
+} from "@/lib/git";
 import { requireSession } from "@/lib/session";
+import fs from "fs";
+import path from "path";
 
-// POST /api/projects/[name]/rename
-// body: { from: string, to: string }
-// Paths are project-root-relative (e.g. "chapters/intro.tex")
-// Handles both single files and entire directories.
 export async function POST(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
     const authResult = requireSession(req as unknown as Request);
     if ("error" in authResult) return authResult.error;
+
     const { name: project } = await ctx.params;
     const body = await req.json();
     const { from: fromPath, to: toPath } = body;
-    if (!fromPath || !toPath)
+
+    if (!fromPath || !toPath) {
       return NextResponse.json({ ok: false, error: "from and to paths required" }, { status: 400 });
-    if (fromPath === toPath)
-      return NextResponse.json({ ok: false, error: "from and to are the same" }, { status: 400 });
-
-    // Full repo-relative paths (as GitHub API expects them)
-    const fullFrom = `${project}/${fromPath}`;
-    const fullTo   = `${project}/${toPath}`;
-
-    // ── Detect file vs directory by inspecting the raw GitHub response ────────
-    // getFileMeta returns an array for directories (GitHub listing) or
-    // an object with { type: "file", sha, content, ... } for files.
-    const meta = await getFileMeta(fullFrom, req as unknown as Request);
-    const isDirectory = Array.isArray(meta) || meta?.type === "dir";
-
-    if (isDirectory) {
-      // ── Directory move: enumerate all files, copy to new path, delete originals ──
-      const files = await listAllFilesInDir(fullFrom, req as unknown as Request);
-
-      for (const { path: srcFullPath } of files) {
-        // srcFullPath is full repo-relative, e.g. "project/olddir/sub/file.tex"
-        const srcMeta = await getFileMeta(srcFullPath, req as unknown as Request);
-        if (Array.isArray(srcMeta) || srcMeta?.type !== "file" || srcMeta.content == null) continue;
-        
-        const rawBase64 = srcMeta.content.replace(/\n/g, "");
-        const buffer = Buffer.from(rawBase64, "base64");
-
-        // Replace the old dir prefix with the new dir prefix
-        const destFullPath = srcFullPath.replace(fullFrom, fullTo);
-
-        // Fetch destination SHA if it exists, to avoid 422 error
-        let destSha: string | undefined;
-        try {
-          const destMeta = await getFileMeta(destFullPath, req as unknown as Request);
-          if (destMeta && !Array.isArray(destMeta)) destSha = destMeta.sha;
-        } catch {/* file doesn't exist yet */}
-
-        await putBinaryAtPath(
-          destFullPath,
-          buffer,
-          `Move ${srcFullPath} → ${destFullPath}`,
-          req as unknown as Request,
-          destSha
-        );
-      }
-
-      // Delete the old directory tree
-      await deleteDirectoryAtPath(fullFrom, req as unknown as Request);
-
-      return NextResponse.json({ ok: true });
-    } else {
-      // ── Single file move ──────────────────────────────────────────────────────
-      if (!meta?.sha || meta.content == null)
-        return NextResponse.json({ ok: false, error: "source file not found" }, { status: 404 });
-      
-      const rawBase64 = meta.content.replace(/\n/g, "");
-      const buffer = Buffer.from(rawBase64, "base64");
-
-      // Fetch destination SHA if it exists
-      let destSha: string | undefined;
-      try {
-        const destMeta = await getFileMeta(fullTo, req as unknown as Request);
-        if (destMeta && !Array.isArray(destMeta)) destSha = destMeta.sha;
-      } catch {/* file doesn't exist yet */}
-
-      // 1. Write to the new path
-      await putBinaryAtPath(fullTo, buffer, `Rename ${fromPath} → ${toPath}`, req as unknown as Request, destSha);
-
-      // 2. Delete the old path (using sha we already fetched)
-      await deleteFileAtPath(fullFrom, `Delete ${fromPath} (renamed)`, meta.sha, req as unknown as Request);
-
-      return NextResponse.json({ ok: true });
     }
+    if (fromPath === toPath) {
+      return NextResponse.json({ ok: false, error: "from and to are the same" }, { status: 400 });
+    }
+
+    const absoluteSourcePath = resolveSafeProjectPath(project, fromPath);
+    const absoluteDestinationPath = resolveSafeProjectPath(project, toPath);
+
+    if (!fs.existsSync(absoluteSourcePath)) {
+      return NextResponse.json({ ok: false, error: `Source not found: ${fromPath}` }, { status: 404 });
+    }
+
+    fs.mkdirSync(path.dirname(absoluteDestinationPath), { recursive: true });
+    fs.renameSync(absoluteSourcePath, absoluteDestinationPath);
+
+    const compileSourcePath = path.join("/tmp/oo-compile", project, fromPath);
+    const compileDestinationPath = path.join("/tmp/oo-compile", project, toPath);
+    try {
+      if (fs.existsSync(compileSourcePath)) {
+        fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
+        fs.renameSync(compileSourcePath, compileDestinationPath);
+      }
+    } catch {
+    }
+
+    await commitPullAndPush(`refactor: rename ${project}/${fromPath} → ${toPath}`);
+    return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }

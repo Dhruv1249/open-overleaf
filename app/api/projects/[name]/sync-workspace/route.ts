@@ -1,38 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/session";
-import { listDirectory } from "@/lib/github";
+import { getRepoRoot } from "@/lib/git";
 import fs from "fs";
 import path from "path";
-
-// ── GitHub file fetch (same helper as in compile route) ────────────────────────
-async function fetchGitHubFileBuffer(
-  repoPath: string,
-  token: string | undefined
-): Promise<Buffer | null> {
-  const owner  = process.env.GITHUB_SINGLE_REPO_OWNER;
-  const repo   = process.env.GITHUB_SINGLE_REPO_NAME;
-  const branch = process.env.DEFAULT_BRANCH || "main";
-  const encoded = repoPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
-  const url = `https://api.github.com/repos/${owner}/${repo}/contents/${encoded}?ref=${branch}`;
-  const headers: Record<string, string> = { Accept: "application/vnd.github+json" };
-  if (token) headers.Authorization = `token ${token}`;
-  const resp = await fetch(url, { headers });
-  if (!resp.ok) return null;
-  const data = await resp.json();
-  if (data?.content != null) return Buffer.from(data.content, "base64");
-  return null;
-}
 
 /**
  * POST /api/projects/[name]/sync-workspace
  *
- * Syncs all project files from GitHub to /tmp/oo-workspace so that
- * TexLab (the LSP server) can see the full multi-file project structure:
- * - Cross-file jump-to-definition / completions
+ * Copies the project from the local git working tree into /tmp/oo-workspace so that
+ * TexLab (the LSP server) can see the full multi-file project structure for:
+ * - Cross-file jump-to-definition and completions
  * - \input{} / \include{} resolution
  * - .bib file indexing
  *
- * Called once when a project is opened in the editor (non-blocking fire-and-forget).
+ * Called once when a project is opened in the editor. Returns immediately while
+ * the copy runs in the background so the editor does not block.
  */
 export async function POST(
   req: NextRequest,
@@ -41,41 +23,20 @@ export async function POST(
   const { name: project } = await ctx.params;
   const authResult = requireSession(req as unknown as Request);
   if ("error" in authResult) return authResult.error;
-  const session = authResult.session;
 
-  const token    = (session as any)?.access_token as string | undefined;
-  const destDir  = "/tmp/oo-workspace";
+  const sourceDir = path.join(getRepoRoot(), project);
+  const destDir = path.join("/tmp/oo-workspace", project);
 
-  // Sync in background — return immediately so the editor doesn't block
-  setImmediate(async () => {
+  setImmediate(() => {
     try {
-      await syncDir(project, destDir, token, req as unknown as Request);
-    } catch (e) {
-      console.error("[sync-workspace]", e);
+      if (fs.existsSync(sourceDir)) {
+        fs.mkdirSync(destDir, { recursive: true });
+        fs.cpSync(sourceDir, destDir, { recursive: true });
+      }
+    } catch (copyError) {
+      console.error("[sync-workspace] Copy failed:", copyError);
     }
   });
 
   return NextResponse.json({ ok: true });
-}
-
-async function syncDir(ghDirPath: string, localDir: string, token: string | undefined, req: Request) {
-  fs.mkdirSync(localDir, { recursive: true });
-  const entries = await listDirectory(ghDirPath, req);
-  // Skip .overleaf.json — not needed by TexLab
-  const filtered = entries.filter((e: any) => e.name !== ".overleaf.json");
-
-  await Promise.all(
-    filtered.map(async (entry: { name: string; path: string; type: string }) => {
-      const localPath = path.join(localDir, entry.name);
-      if (entry.type === "dir") {
-        await syncDir(entry.path, localPath, token, req);
-      } else {
-        const buf = await fetchGitHubFileBuffer(entry.path, token);
-        if (buf !== null) {
-          fs.mkdirSync(path.dirname(localPath), { recursive: true });
-          fs.writeFileSync(localPath, buf);
-        }
-      }
-    })
-  );
 }

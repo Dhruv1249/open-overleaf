@@ -1,37 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/session";
+import { getFileHistory, getFileAtRevision, resolveSafeProjectPath, getRepoRoot } from "@/lib/git";
+import path from "path";
 
-function ghHeaders(token?: string): Record<string, string> {
-  const h: Record<string, string> = { Accept: "application/vnd.github+json" };
-  if (token) h.Authorization = `token ${token}`;
-  return h;
-}
-
-// Retry a fetch up to `retries` times on transient network failures (EAI_AGAIN etc.)
-async function fetchWithRetry(
-  url: string,
-  headers: Record<string, string>,
-  retries = 2
-): Promise<Response> {
-  let lastErr: unknown;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    try {
-      return await fetch(url, { headers });
-    } catch (e: any) {
-      lastErr = e;
-      // Only retry on transient DNS / ECONNRESET errors, not 4xx/5xx
-      const code: string = e?.cause?.code ?? e?.code ?? "";
-      const isTransient = ["EAI_AGAIN", "ECONNRESET", "ETIMEDOUT", "ENOTFOUND"].includes(code);
-      if (!isTransient || attempt === retries) break;
-      await new Promise(r => setTimeout(r, 400 * (attempt + 1)));
-    }
-  }
-  throw lastErr;
-}
-
-// ── GET /api/projects/[name]/history?path=<filePath>[&sha=<commitSha>] ────────
-// Without sha  → returns commit list for the file (Mode B)
-// With    sha  → returns raw file content at that commit (Mode A)
 export async function GET(
   req: NextRequest,
   ctx: { params: Promise<{ name: string }> }
@@ -40,82 +11,38 @@ export async function GET(
 
   const authResult = requireSession(req as unknown as Request);
   if ("error" in authResult) return authResult.error;
-  const session = authResult.session;
-
-  const token = session?.access_token as string | undefined;
-  const owner  = process.env.GITHUB_SINGLE_REPO_OWNER;
-  const repo   = process.env.GITHUB_SINGLE_REPO_NAME;
-  const branch = process.env.DEFAULT_BRANCH || "main";
-
-  if (!owner || !repo) {
-    return NextResponse.json({ ok: false, error: "GitHub repo not configured" }, { status: 500 });
-  }
 
   const searchParams = new URL(req.url).searchParams;
-  const path         = searchParams.get("path");
-  const sha          = searchParams.get("sha");
+  const filePath = searchParams.get("path");
+  const sha = searchParams.get("sha");
 
-  if (!path) {
+  if (!filePath) {
     return NextResponse.json({ ok: false, error: "path query param required" }, { status: 400 });
   }
 
-  // Full repo path = project/file
-  const repoPath = `${project}/${path}`;
-  const encode   = (p: string) => p.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+  const absolutePath = resolveSafeProjectPath(project, filePath);
+  const repoRelativePath = path.relative(getRepoRoot(), absolutePath);
 
-  // ── Mode A: file content at a specific commit ─────────────────────────────
   if (sha) {
-    const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${encode(repoPath)}?ref=${sha}`;
     try {
-      const resp = await fetchWithRetry(apiUrl, ghHeaders(token));
-      if (!resp.ok) {
-        return NextResponse.json(
-          { ok: false, error: `GitHub: ${resp.status} ${resp.statusText}` },
-          { status: resp.status }
-        );
-      }
-      const data    = await resp.json();
-      const content = data?.content != null
-        ? Buffer.from(data.content.replace(/\n/g, ""), "base64").toString("utf8")
-        : "";
+      const content = await getFileAtRevision(repoRelativePath, sha);
       return NextResponse.json({ ok: true, content });
-    } catch (e: any) {
+    } catch (error: any) {
       return NextResponse.json(
-        { ok: false, error: `Network error fetching commit content: ${e?.cause?.code ?? e?.message ?? "unknown"}` },
-        { status: 502 }
+        { ok: false, error: `Could not retrieve file at revision ${sha}: ${error.message}` },
+        { status: 404 }
       );
     }
   }
 
-  // ── Mode B: commit list for the file ─────────────────────────────────────
   const perPage = Math.min(Number(searchParams.get("per_page") || "30"), 100);
-  const apiUrl  = `https://api.github.com/repos/${owner}/${repo}/commits`
-    + `?sha=${branch}&path=${encode(repoPath)}&per_page=${perPage}`;
-
   try {
-    const resp = await fetchWithRetry(apiUrl, ghHeaders(token));
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      return NextResponse.json(
-        { ok: false, error: `GitHub: ${resp.status} ${body}` },
-        { status: resp.status }
-      );
-    }
-
-    const commits: any[] = await resp.json();
-    const items = commits.map((c: any) => ({
-      sha:     c.sha,
-      message: c.commit?.message ?? "",
-      author:  c.commit?.author?.name ?? c.commit?.committer?.name ?? "Unknown",
-      date:    c.commit?.author?.date ?? c.commit?.committer?.date ?? "",
-      url:     c.html_url ?? "",
-    }));
-
-    return NextResponse.json({ ok: true, commits: items });
-  } catch (e: any) {
+    const commits = await getFileHistory(repoRelativePath, perPage);
+    return NextResponse.json({ ok: true, commits });
+  } catch (error: any) {
     return NextResponse.json(
-      { ok: false, error: `Network error fetching commits: ${e?.cause?.code ?? e?.message ?? "unknown"}` },
-      { status: 502 }
+      { ok: false, error: `Could not read git history: ${error.message}` },
+      { status: 500 }
     );
   }
 }
