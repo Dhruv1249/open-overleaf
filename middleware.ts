@@ -1,20 +1,20 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { NextResponse } from "next/server.js";
+import type { NextRequest } from "next/server.js";
 
-// Verify HMAC SHA-256 JWT signature using standard Web Crypto API (supported in Edge Runtime)
-async function verifyJwt(token: string, secret: string): Promise<any | null> {
+/**
+ * Verifies HMAC SHA-256 JWT signature and expiration using the Web Crypto API.
+ */
+async function verifySessionJwt(token: string, secret: string): Promise<boolean> {
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return null;
+    if (parts.length !== 3) return false;
 
     const [headerB64, payloadB64, signatureB64] = parts;
-    
-    // Verify signature
+
     const encoder = new TextEncoder();
-    const secretKeyData = encoder.encode(secret);
     const key = await crypto.subtle.importKey(
       "raw",
-      secretKeyData,
+      encoder.encode(secret),
       { name: "HMAC", hash: "SHA-256" },
       false,
       ["verify"]
@@ -22,83 +22,75 @@ async function verifyJwt(token: string, secret: string): Promise<any | null> {
 
     const base64UrlToBytes = (base64Url: string) => {
       let base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
-      while (base64.length % 4) {
-        base64 += "=";
-      }
+      while (base64.length % 4) base64 += "=";
       const raw = atob(base64);
-      const val = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) {
-        val[i] = raw.charCodeAt(i);
-      }
-      return val;
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      return bytes;
     };
-
-    const data = encoder.encode(`${headerB64}.${payloadB64}`);
-    const signature = base64UrlToBytes(signatureB64);
 
     const isValid = await crypto.subtle.verify(
       "HMAC",
       key,
-      signature,
-      data
+      base64UrlToBytes(signatureB64),
+      encoder.encode(`${headerB64}.${payloadB64}`)
     );
+    if (!isValid) return false;
 
-    if (!isValid) return null;
+    const payload = JSON.parse(atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/")));
+    if (payload.exp && Date.now() >= payload.exp * 1000) return false;
 
-    // Decode payload
-    const payloadJson = atob(payloadB64.replace(/-/g, "+").replace(/_/g, "/"));
-    const payload = JSON.parse(payloadJson);
-
-    // Check expiration
-    if (payload.exp && Date.now() >= payload.exp * 1000) {
-      return null;
-    }
-
-    return payload;
+    return true;
   } catch {
-    return null;
+    return false;
   }
 }
 
+/**
+ * Edge middleware with two auth paths:
+ *   1. Browser session — oo_session cookie verified as HMAC-SHA256 JWT.
+ *   2. MCP / internal — Bearer token matched against OVERLEAF_MCP_TOKEN.
+ */
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  // 1. Skip next static files, public files, and favicon
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/static") ||
-    pathname.includes(".") || // e.g. favicon.ico, images, etc.
+    pathname.includes(".") ||
     pathname === "/favicon.ico"
   ) {
     return NextResponse.next();
   }
 
-  const sessionCookie = request.cookies.get("oo_session")?.value;
-  const sessionSecret = process.env.SESSION_SECRET;
+  const sessionSecret = process.env.SESSION_SECRET ?? "";
+  const mcpToken = (process.env.OVERLEAF_MCP_TOKEN ?? "").trim();
 
-  let hasValidSession = false;
+  let authenticated = false;
+
+  const sessionCookie = request.cookies.get("oo_session")?.value;
   if (sessionCookie && sessionSecret) {
-    const payload = await verifyJwt(sessionCookie, sessionSecret);
-    if (payload) {
-      hasValidSession = true;
+    authenticated = await verifySessionJwt(sessionCookie, sessionSecret);
+  }
+
+  if (!authenticated && mcpToken) {
+    const authHeader = (request.headers.get("authorization") ?? "").trim();
+    if (authHeader.startsWith("Bearer ")) {
+      authenticated = authHeader.slice(7).trim() === mcpToken;
     }
   }
 
-  // 3. Define bypass paths for OAuth / Authentication endpoints
-  const isAuthApi =
+  const isPublicRoute =
+    pathname === "/login" ||
     pathname === "/api/auth/github/login" ||
     pathname === "/api/auth/github/callback" ||
     pathname === "/api/auth/session" ||
-    pathname === "/api/auth/logout";
+    pathname === "/api/auth/logout" ||
+    pathname.startsWith("/api/mcp");
 
-  // 4. Handle Redirection / Gatekeeping
-  if (!hasValidSession) {
-    // ALLOW access to login page and authentication APIs even if not authenticated
-    if (pathname === "/login" || isAuthApi) {
-      return NextResponse.next();
-    }
+  if (!authenticated) {
+    if (isPublicRoute) return NextResponse.next();
 
-    // Block all other API requests with a 401 response
     if (pathname.startsWith("/api/")) {
       return NextResponse.json(
         { error: "Unauthorized", message: "Authentication required" },
@@ -106,33 +98,18 @@ export async function middleware(request: NextRequest) {
       );
     }
 
-    // Redirect any page request to the login screen
     const loginUrl = new URL("/login", request.url);
-    // Preserve any existing error parameters (like forbidden/oauth)
     const err = request.nextUrl.searchParams.get("error");
-    if (err) {
-      loginUrl.searchParams.set("error", err);
-    }
+    if (err) loginUrl.searchParams.set("error", err);
     return NextResponse.redirect(loginUrl);
-  } else {
-    // If the user HAS a valid session and tries to visit `/login`, redirect to `/`
-    if (pathname === "/login") {
-      return NextResponse.redirect(new URL("/", request.url));
-    }
-    return NextResponse.next();
   }
+
+  if (pathname === "/login") {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+  return NextResponse.next();
 }
 
-// Apply middleware to all routes except internal Next.js assets
 export const config = {
-  matcher: [
-    /*
-     * Match all request paths except for the ones starting with:
-     * - api/production-check (if any)
-     * - _next/static (static files)
-     * - _next/image (image optimization files)
-     * - favicon.ico (favicon file)
-     */
-    "/((?!_next/static|_next/image|favicon.ico).*)",
-  ],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
