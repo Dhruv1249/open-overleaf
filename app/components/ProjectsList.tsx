@@ -44,22 +44,25 @@ function Modal({
   title, onClose, children,
 }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
   return (
     <div style={{
       position: "fixed", inset: 0, zIndex: 900,
       display: "flex", alignItems: "center", justifyContent: "center",
       background: "rgba(0,0,0,0.55)", backdropFilter: "blur(3px)",
+      padding: 16,
     }} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{
         background: "var(--ink-float)", border: "1px solid var(--rule-emphasis)",
-        borderRadius: "var(--r-md)", padding: 24, width: 360,
+        borderRadius: "var(--r-md)", padding: 24, width: "100%", maxWidth: 420,
+        boxSizing: "border-box",
         boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
+        overflow: "hidden",
       }}>
-        <div style={{ fontSize: "0.875rem", fontWeight: 700, color: "var(--quill-primary)", marginBottom: 16 }}>{title}</div>
+        <div style={{ fontSize: "0.875rem", fontWeight: 700, color: "var(--quill-primary)", marginBottom: 16, wordBreak: "break-word" }}>{title}</div>
         {children}
       </div>
     </div>
@@ -216,7 +219,7 @@ export default function ProjectsList({ onSelect }: { onSelect: (name: string) =>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                 <FolderSvg active={activeProject === p.name} />
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="project-name">{p.name}</div>
+                  <div className="project-name" title={p.name}>{p.name}</div>
                   {p.manifest?.description && (
                     <div className="project-desc">{p.manifest.description}</div>
                   )}

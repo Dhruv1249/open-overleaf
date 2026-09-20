@@ -1722,6 +1722,113 @@ body {
   line-height: 1.45;
 }
 
+.copilot-markdown-content {
+  line-height: 1.5;
+  font-size: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.copilot-md-paragraph {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.copilot-inline-code {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  background: var(--ink-base);
+  color: var(--lamp);
+  padding: 1px 4px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--rule-soft);
+}
+
+.copilot-md-list, .copilot-md-ordered-list {
+  margin: 2px 0 2px 14px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.copilot-md-list li, .copilot-md-ordered-list li {
+  line-height: 1.45;
+}
+
+.copilot-md-h1, .copilot-md-h2, .copilot-md-h3 {
+  font-weight: 600;
+  color: var(--quill-primary);
+  margin: 4px 0 2px 0;
+}
+
+.copilot-md-h1 { font-size: 0.875rem; }
+.copilot-md-h2 { font-size: 0.8125rem; }
+.copilot-md-h3 { font-size: 0.75rem; }
+
+.copilot-md-blockquote {
+  margin: 4px 0;
+  padding: 2px 8px;
+  border-left: 2px solid var(--lamp);
+  color: var(--quill-secondary);
+  background: var(--lamp-dim);
+  border-radius: 0 var(--r-xs) var(--r-xs) 0;
+}
+
+.copilot-code-block-container {
+  margin: 4px 0;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--rule-standard);
+  background: var(--ink-base);
+  overflow: hidden;
+}
+
+.copilot-code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  background: var(--ink-raised);
+  border-bottom: 1px solid var(--rule-soft);
+  font-size: 0.625rem;
+  font-family: var(--font-mono);
+  color: var(--quill-muted);
+}
+
+.copilot-code-copy-btn {
+  background: transparent;
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  color: var(--quill-secondary);
+  font-size: 0.5625rem;
+  padding: 1px 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.copilot-code-copy-btn:hover {
+  background: var(--ctrl-hover);
+  color: var(--quill-primary);
+  border-color: var(--rule-focus);
+}
+
+.copilot-code-pre-block {
+  margin: 0;
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  overflow-x: auto;
+  color: var(--quill-primary);
+  line-height: 1.4;
+}
+
+.copilot-link {
+  color: var(--lamp);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .copilot-tool-failure-box {
   margin-top: 6px;
   padding: 6px 8px;

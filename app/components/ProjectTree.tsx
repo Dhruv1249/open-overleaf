@@ -189,18 +189,18 @@ function ContextMenu({ menu, onClose, onAction }: {
 // ── Modal helpers ─────────────────────────────────────────────────────────────
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
-    const h = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
+    const handleKeyDown = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
   return (
     <div style={{ position:"fixed",inset:0,zIndex:900,display:"flex",alignItems:"center",justifyContent:"center",
-      background:"rgba(0,0,0,0.5)",backdropFilter:"blur(2px)" }}
+      background:"rgba(0,0,0,0.5)",backdropFilter:"blur(2px)",padding:16 }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div style={{ background:"var(--ink-float)",border:"1px solid var(--rule-emphasis)",
-        borderRadius:"var(--r-md)",padding:20,width:340,boxShadow:"0 24px 48px rgba(0,0,0,0.55)" }}>
-        <div style={{ fontSize: "0.875rem",fontWeight:600,color:"var(--quill-primary)",marginBottom:14 }}>{title}</div>
+        borderRadius:"var(--r-md)",padding:22,width:"100%",maxWidth:440,boxSizing:"border-box",boxShadow:"0 24px 48px rgba(0,0,0,0.55)",overflow:"hidden" }}>
+        <div style={{ fontSize: "0.875rem",fontWeight:600,color:"var(--quill-primary)",marginBottom:14,wordBreak:"break-word" }}>{title}</div>
         {children}
       </div>
     </div>
@@ -219,11 +219,15 @@ function ModalInput({ value, onChange, placeholder, onSubmit, hint }: {
         onKeyDown={(e) => { if (e.key === "Enter") onSubmit(); }}
         style={{ width:"100%",padding:"7px 10px",background:"var(--ctrl-bg)",
           border:"1px solid var(--ctrl-border)",borderRadius:"var(--r-sm)",
-          color:"var(--quill-primary)",fontSize: "0.875rem",fontFamily:"var(--font-mono)",outline:"none" }}
+          color:"var(--quill-primary)",fontSize: "0.875rem",fontFamily:"var(--font-mono)",outline:"none",boxSizing:"border-box" }}
         onFocus={(e)  => (e.target.style.borderColor = "var(--rule-focus)")}
         onBlur={(e)   => (e.target.style.borderColor = "var(--ctrl-border)")}
       />
-      {hint && <div style={{ marginTop:5,fontSize: "0.8125rem",color:"var(--quill-muted)" }}>{hint}</div>}
+      {hint && (
+        <div style={{ marginTop:6,fontSize: "0.75rem",color:"var(--quill-muted)",fontFamily:"var(--font-mono)",wordBreak:"break-all",overflowWrap:"anywhere",lineHeight:1.4 }}>
+          {hint}
+        </div>
+      )}
     </>
   );
 }
@@ -1043,15 +1047,15 @@ export default function ProjectTree({
             <h4 style={{ margin: "0 0 12px", fontSize: "0.9375rem", color: "var(--quill-primary)", fontWeight: 600 }}>
               Move file?
             </h4>
-            <p style={{ margin: "0 0 6px", fontSize: "0.8125rem", color: "var(--quill-secondary)", lineHeight: 1.6 }}>
+            <p style={{ margin: "0 0 6px", fontSize: "0.8125rem", color: "var(--quill-secondary)", lineHeight: 1.6, wordBreak: "break-all" }}>
               Move{" "}
-              <code style={{ fontFamily: "var(--font-mono)", fontSize: "0.8125rem", color: "var(--lamp)", background: "rgba(200,169,110,0.12)", padding: "1px 5px", borderRadius: 3 }}>
+              <code style={{ fontFamily: "var(--font-mono)", fontSize: "0.8125rem", color: "var(--lamp)", background: "rgba(200,169,110,0.12)", padding: "1px 5px", borderRadius: 3, wordBreak: "break-all" }}>
                 {pendingMove.fileName}
               </code>
             </p>
-            <p style={{ margin: "0 0 20px", fontSize: "0.8125rem", color: "var(--quill-secondary)", lineHeight: 1.6 }}>
+            <p style={{ margin: "0 0 20px", fontSize: "0.8125rem", color: "var(--quill-secondary)", lineHeight: 1.6, wordBreak: "break-all" }}>
               to{" "}
-              <code style={{ fontFamily: "var(--font-mono)", fontSize: "0.8125rem", color: "var(--lamp)", background: "rgba(200,169,110,0.12)", padding: "1px 5px", borderRadius: 3 }}>
+              <code style={{ fontFamily: "var(--font-mono)", fontSize: "0.8125rem", color: "var(--lamp)", background: "rgba(200,169,110,0.12)", padding: "1px 5px", borderRadius: 3, wordBreak: "break-all" }}>
                 {pendingMove.dirPath ? `${pendingMove.dirPath}/` : "/ (project root)"}
               </code>
             </p>

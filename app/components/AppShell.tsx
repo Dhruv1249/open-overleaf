@@ -1365,15 +1365,30 @@ export default function AppShell() {
         >
           {project ? (
             <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-              <div className="panel-header">
+              <div className="panel-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%", gap: 8 }}>
                 <button
                   className="btn-sm btn-ghost"
                   onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ fontSize: "0.8125rem", gap: 4 }}
+                  style={{ fontSize: "0.8125rem", gap: 4, flexShrink: 0 }}
                 >
                   ← Projects
                 </button>
-                <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={project}>
+                <span
+                  style={{
+                    fontSize: "0.8125rem",
+                    fontWeight: 600,
+                    color: "var(--quill-secondary)",
+                    fontFamily: "var(--font-mono)",
+                    flex: 1,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                    textAlign: "right",
+                    marginLeft: "auto",
+                  }}
+                  title={project}
+                >
                   {project}
                 </span>
               </div>
@@ -1550,7 +1565,7 @@ export default function AppShell() {
                   ◷ History
                 </button>
               )}
-              {selectedFile && (
+              {project && (
                 <button
                   title="Open AI Copilot"
                   onClick={() => setShowCopilot(c => !c)}

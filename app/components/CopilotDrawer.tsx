@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import MarkdownContent from "./MarkdownContent";
 
 export interface ChatMessageItem {
   id: string;
@@ -177,7 +178,7 @@ export default function CopilotDrawer({
     {
       id: "welcome-1",
       sender: "copilot",
-      text: "Hello! I am your Open-Overleaf Copilot powered by gemini-3.5-flash-lite. Type a request or reference files using @filename to refine your LaTeX document.",
+      text: "Hello! I am your Open-Overleaf Copilot. Type a request or reference files using @filename to refine your LaTeX document.",
     },
   ]);
   const [isLoadingState, setIsLoadingState] = useState(false);
@@ -556,7 +557,7 @@ export default function CopilotDrawer({
       {
         id: "welcome-1",
         sender: "copilot",
-        text: "Hello! I am your Open-Overleaf Copilot powered by gemini-3.5-flash-lite. Type a request or reference files using @filename to refine your LaTeX document.",
+        text: "Hello! I am your Open-Overleaf Copilot. Type a request or reference files using @filename to refine your LaTeX document.",
       },
     ]);
   };
@@ -572,7 +573,6 @@ export default function CopilotDrawer({
 
     const textBeforeCursor = value.slice(0, cursorPos);
     const atIndex = textBeforeCursor.lastIndexOf("@");
-
     if (atIndex !== -1) {
       const charBeforeAt = atIndex > 0 ? textBeforeCursor[atIndex - 1] : " ";
       const query = textBeforeCursor.slice(atIndex + 1);
@@ -618,7 +618,7 @@ export default function CopilotDrawer({
       <div className="copilot-header">
         <div className="copilot-header-info">
           <h2 className="copilot-title">Overleaf Copilot</h2>
-          <p className="copilot-model">gemini-3.5-flash-lite</p>
+          <p className="copilot-model">AI Assistant</p>
         </div>
         <div className="copilot-header-actions">
           {errorCount > 0 && (
@@ -709,7 +709,11 @@ export default function CopilotDrawer({
                     Thinking Process
                   </div>
                 )}
-                <p className="copilot-msg-text">{messageItem.text}</p>
+                {isUser ? (
+                  <p className="copilot-msg-text">{messageItem.text}</p>
+                ) : (
+                  <MarkdownContent content={messageItem.text} />
+                )}
 
                 {messageItem.isToolCall && messageItem.toolStatus === "failed" && (
                   <div className="copilot-tool-failure-box">
