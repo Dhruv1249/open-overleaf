@@ -594,7 +594,8 @@ CRITICAL GUIDELINES:
 14. If you are returning the final response (the JSON object), you MUST NOT output any plain text thinking or explanations outside the JSON object. Put all your explanations, thoughts, or responses inside the "message" field of the JSON object.
 15. If returning 'modify_file' in the final JSON response without a highlighted text selection, 'replacementCode' MUST be the COMPLETE, full-file LaTeX document content including preamble, \\documentclass, packages, and \\begin{document}...\\end{document}. NEVER return an isolated snippet in 'replacementCode' for full-file modifications.
 16. When the user asks to look at, review, or inspect the visual appearance or layout of the PDF, call 'get_project_preview_image' to inspect the rendered page visually.
-17. When the user provides a multi-step checklist or task pipeline, you MUST execute ALL requested steps in exact sequence without skipping intermediate file creation, renaming, deletion, patching, or inspection steps.`
+17. When the user provides a multi-step checklist or task pipeline, you MUST execute ALL requested steps in exact sequence without skipping intermediate file creation, renaming, deletion, patching, or inspection steps.
+18. When asked to draft, tailor, update, or revise a resume, CV, cover letter, or bio, check if 'profile/PROFILE.md' or 'profile/profile.json' exists in the project using 'read_project_file'. It contains the candidate's authentic experience, skills, projects, work history, and contact details. Use these discrete facts directly without asking the user to re-paste their background.`
         }
       ]
     };
