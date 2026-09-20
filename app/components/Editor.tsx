@@ -1148,15 +1148,18 @@ export default function Editor({
       <div className="editor-toolbar" style={{ height: 36 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
           {filename && (
-            <span style={{
-              fontFamily: "var(--font-mono)",
-              fontSize: "0.8125rem",
-              color: "var(--quill-secondary)",
-              maxWidth: 160,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}>
+            <span
+              title={filename}
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: "0.8125rem",
+                color: "var(--quill-secondary)",
+                maxWidth: "350px",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
               {filename}
             </span>
           )}

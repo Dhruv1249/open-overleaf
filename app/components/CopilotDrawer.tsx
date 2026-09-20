@@ -649,13 +649,12 @@ export default function CopilotDrawer({
         </div>
       </div>
 
-      {/* ── Context bar ── */}
       <div className="copilot-context-bar">
-        <span className="copilot-context-label">Attach Context:</span>
+        <span className="copilot-context-label" style={{ flexShrink: 0 }}>Attach Context:</span>
         {activeFilePath ? (
-          <span className="copilot-tag">
-            <span>@{activeFilePath}</span>
-            <span className="copilot-tag-sub">(active)</span>
+          <span className="copilot-tag" title={activeFilePath} style={{ maxWidth: "100%", overflow: "hidden" }}>
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>@{activeFilePath.split("/").pop()}</span>
+            <span className="copilot-tag-sub" style={{ flexShrink: 0 }}>(active)</span>
           </span>
         ) : (
           <span className="copilot-no-context">No active file</span>

@@ -795,6 +795,8 @@ body {
   font-size: 0.75rem;
   color: var(--quill-muted);
   gap: var(--sp-4);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .status-left {
@@ -1049,6 +1051,7 @@ body {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 0.75rem;
 }
 .tree-rename-input {
@@ -1570,6 +1573,9 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .copilot-tag-sub {

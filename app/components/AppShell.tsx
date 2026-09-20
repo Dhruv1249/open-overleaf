@@ -1294,20 +1294,30 @@ export default function AppShell() {
           <nav className="breadcrumb" aria-label="Navigation">
             {project ? (
               <>
-                <div className="desktop-breadcrumb">
+                <div className="desktop-breadcrumb" style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "50vw" }}>
                   <button
                     onClick={() => { setProject(null); setSelectedFile(null); }}
-                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: "0.8125rem" }}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: "0.8125rem", flexShrink: 0 }}
                   >
                     Projects
                   </button>
-                  <span className="breadcrumb-sep">/</span>
-                  <span className={selectedFile ? "" : "breadcrumb-active"}>{project}</span>
+                  <span className="breadcrumb-sep" style={{ flexShrink: 0 }}>/</span>
+                  <span className={selectedFile ? "" : "breadcrumb-active"} style={{ flexShrink: 0 }} title={project}>{project}</span>
                   {selectedFile && (
                     <>
-                      <span className="breadcrumb-sep">/</span>
-                      <span className="breadcrumb-active mono" style={{ fontSize: "0.8125rem" }}>
-                        {selectedFile.replace(/\//g, " / ")}
+                      <span className="breadcrumb-sep" style={{ flexShrink: 0 }}>/</span>
+                      <span
+                        className="breadcrumb-active mono"
+                        title={selectedFile}
+                        style={{
+                          fontSize: "0.8125rem",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
+                          minWidth: 0,
+                        }}
+                      >
+                        {selectedFile.split("/").pop()}
                       </span>
                     </>
                   )}
@@ -1363,7 +1373,7 @@ export default function AppShell() {
                 >
                   ← Projects
                 </button>
-                <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis" }}>
+                <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--quill-secondary)", fontFamily: "var(--font-mono)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={project}>
                   {project}
                 </span>
               </div>
@@ -1514,13 +1524,13 @@ export default function AppShell() {
 
           {/* Status bar */}
           <div className="status-bar">
-            <div className="status-left">
-              <span className="status-item mono">
+            <div className="status-left" style={{ minWidth: 0, flex: 1 }}>
+              <span className="status-item mono" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }} title={selectedFile ?? undefined}>
                 {selectedFile ?? "Open Overleaf v0.1"}
               </span>
               {mainFile && (
-                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: "0.6875rem" }}>
-                  ⌖ {mainFile}
+                <span className="status-item" style={{ color: "var(--quill-muted)", fontSize: "0.6875rem", flexShrink: 0 }}>
+                  ⌖ {mainFile.split("/").pop()}
                 </span>
               )}
             </div>
