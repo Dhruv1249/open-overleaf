@@ -160,12 +160,17 @@ function PdfPanel({
   const targetFile = (settings.compileTarget === "root" && settings.rootFile) ? settings.rootFile : relMf;
 
   const pdfSrc = project && targetFile && pdfKey > 0
-    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}#pagemode=none&navpanes=0`
+    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}#view=FitH&pagemode=none&navpanes=0`
     : null;
 
   const spinning = compileState === "syncing" || compileState === "compiling";
 
   const [pdfBlobUrl, setPdfBlobUrl] = React.useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    setSettingsOpen(window.innerWidth > 768);
+  }, []);
 
   React.useEffect(() => {
     if (!pdfSrc || !project || !targetFile) {
@@ -436,7 +441,7 @@ function PdfPanel({
         {pdfKey > 0 && pdfSrc ? (
           <iframe
             key={pdfKey}
-            src={pdfBlobUrl ? `${pdfBlobUrl}#pagemode=none&navpanes=0` : pdfSrc}
+            src={pdfBlobUrl ? `${pdfBlobUrl}#view=FitH&pagemode=none&navpanes=0` : pdfSrc}
             style={{ width: "100%", flex: 1, border: "none", display: "block", minHeight: 0 }}
             title="PDF Preview"
           />
@@ -585,56 +590,17 @@ function PdfPanel({
         </details>
       )}
 
-      {/* ── Compiler settings footer ── */}
-      <div style={{ borderTop: "1px solid var(--rule-soft)", flexShrink: 0, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
-
-        {/* Engine */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Engine</span>
-          <select
-            value={settings.engine}
-            onChange={e => onSettingsChange({ ...settings, engine: e.target.value as Engine })}
-            style={{
-              background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
-              borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
-              fontSize: "0.75rem", fontFamily: "var(--font-mono)",
-              cursor: "pointer", outline: "none", padding: "2px 6px",
-            }}
-          >
-            <option value="auto">auto-detect</option>
-            <option value="xelatex">xelatex</option>
-            <option value="pdflatex">pdflatex</option>
-            <option value="lualatex">lualatex</option>
-            <option value="latexmk">latexmk</option>
-          </select>
-        </div>
-
-        {/* Compile Target */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile Target</span>
-          <select
-            value={settings.compileTarget}
-            onChange={e => onSettingsChange({ ...settings, compileTarget: e.target.value as "current" | "root" })}
-            style={{
-              background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
-              borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
-              fontSize: "0.75rem", fontFamily: "var(--font-mono)",
-              cursor: "pointer", outline: "none", padding: "2px 6px",
-              maxWidth: 140, textOverflow: "ellipsis", whiteSpace: "nowrap"
-            }}
-          >
-            <option value="current">Current file</option>
-            <option value="root">Root: {settings.rootFile || "not set"}</option>
-          </select>
-        </div>
-
-        {/* Compile mode */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
-          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+      <details className="compiler-settings-drawer" open={settingsOpen} onToggle={(e) => setSettingsOpen(e.currentTarget.open)}>
+        <summary className="compiler-settings-summary">
+          <span>⚙ Settings</span>
+          <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)" }}>{settings.engine} · {settings.mode}</span>
+        </summary>
+        <div className="compiler-settings-body">
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Engine</span>
             <select
-              value={settings.mode}
-              onChange={e => onSettingsChange({ ...settings, mode: e.target.value as CompileMode })}
+              value={settings.engine}
+              onChange={e => onSettingsChange({ ...settings, engine: e.target.value as Engine })}
               style={{
                 background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
                 borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
@@ -642,54 +608,92 @@ function PdfPanel({
                 cursor: "pointer", outline: "none", padding: "2px 6px",
               }}
             >
-              <option value="debounced">Auto (2s)</option>
-              <option value="live">Live (500ms)</option>
-              <option value="interval">Every N seconds</option>
-              <option value="manual">Manual</option>
+              <option value="auto">auto-detect</option>
+              <option value="xelatex">xelatex</option>
+              <option value="pdflatex">pdflatex</option>
+              <option value="lualatex">lualatex</option>
+              <option value="latexmk">latexmk</option>
             </select>
-            {settings.mode === "interval" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
-                <input
-                  type="number"
-                  min={5} max={300} step={5}
-                  value={settings.intervalSeconds}
-                  onChange={e => onSettingsChange({ ...settings, intervalSeconds: Math.max(5, Number(e.target.value)) })}
-                  style={{
-                    width: 48, padding: "2px 5px",
-                    background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
-                    borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
-                    fontSize: "0.75rem", fontFamily: "var(--font-mono)", outline: "none",
-                    textAlign: "center",
-                  }}
-                />
-                <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)" }}>s</span>
-              </div>
-            )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile Target</span>
+            <select
+              value={settings.compileTarget}
+              onChange={e => onSettingsChange({ ...settings, compileTarget: e.target.value as "current" | "root" })}
+              style={{
+                background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+                borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+                fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+                cursor: "pointer", outline: "none", padding: "2px 6px",
+                maxWidth: 140, textOverflow: "ellipsis", whiteSpace: "nowrap"
+              }}
+            >
+              <option value="current">Current file</option>
+              <option value="root">Root: {settings.rootFile || "not set"}</option>
+            </select>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Compile</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <select
+                value={settings.mode}
+                onChange={e => onSettingsChange({ ...settings, mode: e.target.value as CompileMode })}
+                style={{
+                  background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+                  borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+                  fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+                  cursor: "pointer", outline: "none", padding: "2px 6px",
+                }}
+              >
+                <option value="debounced">Auto (2s)</option>
+                <option value="live">Live (500ms)</option>
+                <option value="interval">Every N seconds</option>
+                <option value="manual">Manual</option>
+              </select>
+              {settings.mode === "interval" && (
+                <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                  <input
+                    type="number"
+                    min={5} max={300} step={5}
+                    value={settings.intervalSeconds}
+                    onChange={e => onSettingsChange({ ...settings, intervalSeconds: Math.max(5, Number(e.target.value)) })}
+                    style={{
+                      width: 48, padding: "2px 5px",
+                      background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+                      borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+                      fontSize: "0.75rem", fontFamily: "var(--font-mono)", outline: "none",
+                      textAlign: "center",
+                    }}
+                  />
+                  <span style={{ fontSize: "0.6875rem", color: "var(--quill-muted)" }}>s</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Auto-save</span>
+            <select
+              value={settings.autoSaveSeconds}
+              onChange={e => onSettingsChange({ ...settings, autoSaveSeconds: Number(e.target.value) })}
+              style={{
+                background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
+                borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
+                fontSize: "0.75rem", fontFamily: "var(--font-mono)",
+                cursor: "pointer", outline: "none", padding: "2px 6px",
+              }}
+            >
+              <option value={2}>After 2s</option>
+              <option value={3}>After 3s</option>
+              <option value={5}>After 5s</option>
+              <option value={10}>After 10s</option>
+              <option value={0}>Disabled</option>
+            </select>
           </div>
         </div>
-
-        {/* Auto-save */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: "0.6875rem", fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--quill-muted)" }}>Auto-save</span>
-          <select
-            value={settings.autoSaveSeconds}
-            onChange={e => onSettingsChange({ ...settings, autoSaveSeconds: Number(e.target.value) })}
-            style={{
-              background: "var(--ctrl-bg)", border: "1px solid var(--ctrl-border)",
-              borderRadius: "var(--r-sm)", color: "var(--quill-secondary)",
-              fontSize: "0.75rem", fontFamily: "var(--font-mono)",
-              cursor: "pointer", outline: "none", padding: "2px 6px",
-            }}
-          >
-            <option value={2}>After 2s</option>
-            <option value={3}>After 3s</option>
-            <option value={5}>After 5s</option>
-            <option value={10}>After 10s</option>
-            <option value={0}>Disabled</option>
-          </select>
-        </div>
-
-      </div>
+      </details>
 
     </aside>
   );
@@ -813,7 +817,7 @@ export default function AppShell() {
   const [showHistory,       setShowHistory]       = useState(false);
   // Copilot drawer panel
   const [showCopilot,       setShowCopilot]       = useState(true);
-  const [copilotHeight,     setCopilotHeight]     = useState(300);
+  const [copilotHeight,     setCopilotHeight]     = useState(260);
   const [editorRestoreKey,  setEditorRestoreKey]  = useState(0);
   const [pendingDiff, setPendingDiff] = useState<{ original: string; modified: string; filePath: string } | null>(null);
   const pendingDiffRef = useRef<{ original: string; modified: string; filePath: string } | null>(null);
@@ -928,7 +932,7 @@ export default function AppShell() {
 
   const dragRail    = useCallback((dx: number) => setRailWidth(w    => clamp(w + dx,  80, 900)),  []);
   const dragPreview = useCallback((dx: number) => setPreviewWidth(w => clamp(w - dx, 150, 1100)), []);
-  const dragCopilot = useCallback((dy: number) => setCopilotHeight(h => clamp(h - dy, 100, 800)), []);
+  const dragCopilot = useCallback((dy: number) => setCopilotHeight(h => clamp(h - dy, 100, typeof window !== "undefined" ? Math.min(800, window.innerHeight * 0.7) : 600)), []);
 
   // Refs that survive re-renders for use in callbacks
   const autoCompileTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1290,22 +1294,27 @@ export default function AppShell() {
           <nav className="breadcrumb" aria-label="Navigation">
             {project ? (
               <>
-                <button
-                  onClick={() => { setProject(null); setSelectedFile(null); }}
-                  style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: "0.8125rem" }}
-                >
-                  Projects
-                </button>
-                <span className="breadcrumb-sep">/</span>
-                <span className={selectedFile ? "" : "breadcrumb-active"}>{project}</span>
-                {selectedFile && (
-                  <>
-                    <span className="breadcrumb-sep">/</span>
-                    <span className="breadcrumb-active mono" style={{ fontSize: "0.8125rem" }}>
-                      {selectedFile.replace(/\//g, " / ")}
-                    </span>
-                  </>
-                )}
+                <div className="desktop-breadcrumb">
+                  <button
+                    onClick={() => { setProject(null); setSelectedFile(null); }}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: "var(--quill-tertiary)", fontSize: "0.8125rem" }}
+                  >
+                    Projects
+                  </button>
+                  <span className="breadcrumb-sep">/</span>
+                  <span className={selectedFile ? "" : "breadcrumb-active"}>{project}</span>
+                  {selectedFile && (
+                    <>
+                      <span className="breadcrumb-sep">/</span>
+                      <span className="breadcrumb-active mono" style={{ fontSize: "0.8125rem" }}>
+                        {selectedFile.replace(/\//g, " / ")}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="mobile-breadcrumb" title={selectedFile || project}>
+                  {selectedFile ? selectedFile.split("/").pop() : project}
+                </div>
               </>
             ) : (
               <span>Projects</span>
@@ -1370,7 +1379,7 @@ export default function AppShell() {
               </div>
 
               {showCopilot && (
-                <div style={{ height: copilotHeight, flexShrink: 0, borderTop: "1px solid var(--rule-soft)", display: "flex", flexDirection: "column" }}>
+                <div style={{ height: `min(${copilotHeight}px, 60vh)`, flexShrink: 0, borderTop: "1px solid var(--rule-soft)", display: "flex", flexDirection: "column" }}>
                   <DragHandleRow onDrag={dragCopilot} />
                   <CopilotDrawer
                     isOpen={showCopilot}

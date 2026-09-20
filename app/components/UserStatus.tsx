@@ -32,20 +32,18 @@ export default function UserStatus() {
   };
 
   if (loading) {
-    // Skeleton placeholder while loading
     return (
       <div
         className="skeleton"
-        style={{ width: 80, height: 22, borderRadius: "var(--r-sm)" }}
+        style={{ width: 60, height: 22, borderRadius: "var(--r-sm)" }}
       />
     );
   }
 
   if (session) {
-    // Logged in — show username + sign out
     return (
       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <span style={{
+        <span className="user-login-badge" style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
@@ -54,20 +52,25 @@ export default function UserStatus() {
           fontFamily: "var(--font-mono)",
         }}>
           <GitHubIcon />
-          {session.login}
+          <span className="user-login-text">{session.login}</span>
         </span>
         <button
-          className="btn-sm"
+          className="btn-sm user-signout-btn"
           onClick={handleLogout}
+          title="Sign out"
           style={{ fontSize: "0.75rem", padding: "3px 8px" }}
         >
-          Sign out
+          <span className="user-signout-label">Sign out</span>
+          <svg className="user-signout-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+            <polyline points="16 17 21 12 16 7" />
+            <line x1="21" y1="12" x2="9" y2="12" />
+          </svg>
         </button>
       </div>
     );
   }
 
-  // Not logged in — show Connect button
   return (
     <a
       href="/api/auth/github/login"

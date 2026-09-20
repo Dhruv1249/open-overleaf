@@ -989,12 +989,82 @@ export default function Editor({
     editorRef.current = actualEditor;
     setEditorInstance(actualEditor);
 
+    const isMobileDevice = typeof window !== "undefined" && (window.innerWidth <= 768 || navigator.maxTouchPoints > 0);
     actualEditor.updateOptions({
-      codeLens: true
+      codeLens: true,
+      dragAndDrop: false,
+      selectOnLineNumbers: true,
+      selectionHighlight: true,
+      fontSize: isMobileDevice ? 13.5 : 14,
+      lineHeight: isMobileDevice ? 21 : 24,
+      padding: isMobileDevice ? { top: 10, bottom: 10 } : { top: 16, bottom: 16 },
+      glyphMargin: !isMobileDevice,
+      folding: !isMobileDevice,
+      lineNumbersMinChars: isMobileDevice ? 3 : 4,
+      quickSuggestions: isMobileDevice ? false : { other: true, comments: false, strings: false },
     });
     if (editor.getOriginalEditor) {
       editor.getOriginalEditor().updateOptions({
-        codeLens: true
+        codeLens: true,
+        dragAndDrop: false,
+        selectOnLineNumbers: true,
+        fontSize: isMobileDevice ? 13.5 : 14,
+        lineHeight: isMobileDevice ? 21 : 24,
+      });
+    }
+
+    const editorDomNode = actualEditor.getDomNode();
+    if (editorDomNode) {
+      let touchPressTimer: any = null;
+      let touchCoordinates: { x: number; y: number } | null = null;
+
+      const handleTouchStart = (event: TouchEvent) => {
+        if (event.touches.length !== 1) return;
+        const touchPoint = event.touches[0];
+        touchCoordinates = { x: touchPoint.clientX, y: touchPoint.clientY };
+        touchPressTimer = setTimeout(() => {
+          if (!touchCoordinates) return;
+          const hitTarget = actualEditor.getTargetAtClientPoint(touchCoordinates.x, touchCoordinates.y);
+          if (hitTarget && hitTarget.position) {
+            const targetWord = actualEditor.getModel()?.getWordAtPosition(hitTarget.position);
+            if (targetWord) {
+              actualEditor.setSelection({
+                startLineNumber: hitTarget.position.lineNumber,
+                startColumn: targetWord.startColumn,
+                endLineNumber: hitTarget.position.lineNumber,
+                endColumn: targetWord.endColumn,
+              });
+              actualEditor.focus();
+            }
+          }
+        }, 380);
+      };
+
+      const handleTouchMove = (event: TouchEvent) => {
+        if (!touchCoordinates || event.touches.length !== 1) return;
+        const touchPoint = event.touches[0];
+        if (Math.hypot(touchPoint.clientX - touchCoordinates.x, touchPoint.clientY - touchCoordinates.y) > 10) {
+          clearTimeout(touchPressTimer);
+          touchPressTimer = null;
+        }
+      };
+
+      const handleTouchEnd = () => {
+        clearTimeout(touchPressTimer);
+        touchPressTimer = null;
+        touchCoordinates = null;
+      };
+
+      editorDomNode.addEventListener("touchstart", handleTouchStart, { passive: true });
+      editorDomNode.addEventListener("touchmove", handleTouchMove, { passive: true });
+      editorDomNode.addEventListener("touchend", handleTouchEnd, { passive: true });
+      editorDomNode.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+
+      actualEditor.onDidDispose(() => {
+        editorDomNode.removeEventListener("touchstart", handleTouchStart);
+        editorDomNode.removeEventListener("touchmove", handleTouchMove);
+        editorDomNode.removeEventListener("touchend", handleTouchEnd);
+        editorDomNode.removeEventListener("touchcancel", handleTouchEnd);
       });
     }
 
@@ -1037,7 +1107,6 @@ export default function Editor({
       }
     });
 
-    // Theme sync
     const applyTheme = () => monaco.editor.setTheme(getMonacoTheme());
     applyTheme();
     const obs = new MutationObserver(applyTheme);
@@ -1077,22 +1146,30 @@ export default function Editor({
       )}
 
       <div className="editor-toolbar" style={{ height: 36 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
           {filename && (
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 17, color: "var(--quill-secondary)" }}>
+            <span style={{
+              fontFamily: "var(--font-mono)",
+              fontSize: "0.8125rem",
+              color: "var(--quill-secondary)",
+              maxWidth: 160,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}>
               {filename}
             </span>
           )}
           {language !== "plaintext" && (
-            <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--quill-muted)" }}>
+            <span style={{ fontSize: "0.75rem", fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--quill-muted)", flexShrink: 0 }}>
               {language}
             </span>
           )}
           {(language === "latex" || language === "bibtex") && lspDot}
-          {dirty && <span className="chip chip-warn" style={{ fontSize: 15 }}>unsaved</span>}
+          {dirty && <span className="chip chip-warn" style={{ fontSize: "0.75rem", flexShrink: 0 }}>unsaved</span>}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 15, color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>⌘S</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+          <span className="editor-shortcut-hint" style={{ fontSize: "0.75rem", color: "var(--quill-muted)", fontFamily: "var(--font-mono)" }}>⌘S</span>
           <button
             className={`btn-sm ${dirty ? "btn-primary" : ""}`}
             onClick={handleSave}
@@ -1102,6 +1179,69 @@ export default function Editor({
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
+      </div>
+
+      <div className="mobile-editor-actions">
+        <button
+          className="mobile-action-btn"
+          onClick={() => editorRef.current?.trigger("touchToolbar", "undo", null)}
+          title="Undo"
+        >
+          ↶ Undo
+        </button>
+        <button
+          className="mobile-action-btn"
+          onClick={() => editorRef.current?.trigger("touchToolbar", "redo", null)}
+          title="Redo"
+        >
+          ↷ Redo
+        </button>
+        <button
+          className="mobile-action-btn"
+          onClick={() => {
+            const model = editorRef.current?.getModel();
+            if (model && editorRef.current) {
+              editorRef.current.setSelection(model.getFullModelRange());
+              editorRef.current.focus();
+            }
+          }}
+          title="Select All"
+        >
+          ⬚ Select All
+        </button>
+        <button
+          className="mobile-action-btn"
+          onClick={() => {
+            const model = editorRef.current?.getModel();
+            const selection = editorRef.current?.getSelection();
+            const textToCopy = (selection && !selection.isEmpty())
+              ? model?.getValueInRange(selection)
+              : model?.getValue();
+            if (textToCopy) {
+              navigator.clipboard.writeText(textToCopy);
+            }
+          }}
+          title="Copy"
+        >
+          📋 Copy
+        </button>
+        <button
+          className="mobile-action-btn"
+          onClick={() => {
+            navigator.clipboard.readText().then((clipText) => {
+              if (!clipText || !editorRef.current) return;
+              const selection = editorRef.current.getSelection();
+              if (selection) {
+                editorRef.current.executeEdits("mobilePaste", [
+                  { range: selection, text: clipText, forceMoveMarkers: true }
+                ]);
+              }
+            }).catch(() => {});
+          }}
+          title="Paste"
+        >
+          📥 Paste
+        </button>
       </div>
 
       <div style={{ flex: 1, minHeight: 0 }}>
@@ -1115,15 +1255,17 @@ export default function Editor({
             theme="oo-dark"
             options={{
               minimap: { enabled: false },
-              fontSize: 16,
+              fontSize: 14,
               fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
               fontLigatures: true,
-              lineHeight: 32,
-              padding: { top: 24, bottom: 24 },
+              lineHeight: 24,
+              padding: { top: 16, bottom: 16 },
               renderSideBySide: false,
               smoothScrolling: true,
               wordWrap: "on",
               codeLens: true,
+              dragAndDrop: false,
+              selectOnLineNumbers: true,
             }}
           />
         ) : (
@@ -1135,11 +1277,11 @@ export default function Editor({
             theme="oo-dark"
             options={{
               minimap:                    { enabled: false },
-              fontSize:                   16,
+              fontSize:                   14,
               fontFamily:                 "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
               fontLigatures:              true,
-              lineHeight:                 32,
-              padding:                    { top: 24, bottom: 24 },
+              lineHeight:                 24,
+              padding:                    { top: 16, bottom: 16 },
               renderLineHighlight:        "gutter",
               scrollBeyondLastLine:       false,
               wordWrap:                   "on",
@@ -1156,6 +1298,8 @@ export default function Editor({
               acceptSuggestionOnEnter:    "on",
               snippetSuggestions:         "top",
               codeLens:                   true,
+              dragAndDrop:                false,
+              selectOnLineNumbers:        true,
               suggest: {
                 showSnippets:    true,
                 filterGraceful:  false,
