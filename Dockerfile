@@ -95,7 +95,6 @@ RUN mkdir -p /app/projects /tmp/oo-compile && chown -R node:node /app/projects /
 RUN printf '#!/bin/sh\n\
 set -e\n\
 \n\
-chmod 600 "$DEPLOY_KEY_PATH"\n\
 export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"\n\
 \n\
 if [ ! -d "/app/projects/.git" ]; then\n\
