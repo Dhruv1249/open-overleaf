@@ -17,24 +17,8 @@ function LoginContent() {
   const [isHovered, setIsHovered] = useState(false);
 
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 1fr",
-      minHeight: "100vh",
-      backgroundColor: "var(--ink-base)",
-      color: "var(--quill-primary)",
-      fontFamily: "var(--font-ui)",
-    }}>
-      {/* Left Column: Welcome and Login Action */}
-      <div style={{
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        padding: "var(--sp-12) var(--sp-10)",
-        borderRight: "1px solid var(--rule-standard)",
-        position: "relative",
-      }}>
-        {/* Soft amber glow decoration */}
+    <div className="login-container">
+      <div className="login-left-column">
         <div style={{
           position: "absolute",
           top: "10%",
@@ -152,18 +136,7 @@ function LoginContent() {
         </div>
       </div>
 
-      {/* Right Column: Premium Document Visual Preview */}
-      <div style={{
-        backgroundColor: "var(--ink-raised)",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        alignItems: "center",
-        padding: "var(--sp-12)",
-        overflow: "hidden",
-        position: "relative",
-      }}>
-        {/* Amber desk lamp glow overlay */}
+      <div className="login-right-column">
         <div style={{
           position: "absolute",
           bottom: "10%",

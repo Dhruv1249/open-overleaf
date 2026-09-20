@@ -1113,12 +1113,69 @@ body {
 }
 
 
-/* ─── RESPONSIVE / MOBILE ─────────────────────────────────────────────────── */
+.login-container {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background-color: var(--ink-base);
+  color: var(--quill-primary);
+  font-family: var(--font-ui);
+}
 
-/* Tablet: slightly smaller base, hide PDF preview in desktop layout */
-@media (max-width: 1100px) {
+.login-left-column {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: var(--sp-12) var(--sp-10);
+  border-right: 1px solid var(--rule-standard);
+  position: relative;
+}
+
+.login-right-column {
+  background-color: var(--ink-raised);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: var(--sp-12);
+  overflow: hidden;
+  position: relative;
+}
+
+@media (max-width: 768px) {
+  .login-container {
+    grid-template-columns: 1fr;
+  }
+  .login-left-column {
+    border-right: none;
+    padding: var(--sp-8) var(--sp-6);
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  .login-right-column {
+    display: none;
+  }
+}
+
+.tablet-preview-toggle {
+  display: none !important;
+}
+
+@media (max-width: 1100px) and (min-width: 769px) {
   html { font-size: 18px; }
-  .preview-panel { display: none !important; }
+  .tablet-preview-toggle { display: inline-flex !important; }
+  .preview-panel:not(.panel-visible) { display: none !important; }
+  .preview-panel.panel-visible {
+    display: flex !important;
+    position: absolute;
+    right: 0;
+    top: 2.5rem;
+    bottom: 0;
+    z-index: 50;
+    width: min(600px, 90vw) !important;
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.4);
+  }
   .drag-handle:last-of-type { display: none !important; }
 }
 
@@ -1149,23 +1206,23 @@ body {
   }
 }
 
-/* Mobile: single-pane with tab navigation */
 @media (max-width: 768px) {
   html { font-size: 16px; }
 
   .app-shell {
-    grid-template-rows: 2.5rem 1fr 3.5rem;
+    grid-template-rows: 2.5rem 1fr;
+    height: 100vh;
+    height: 100dvh;
   }
 
-  /* Override tablet's preview-panel display:none so the Preview tab works */
   .preview-panel { display: flex !important; }
   .drag-handle:last-of-type { display: none !important; }
 
-  /* Stack panels — active one slides into view */
   .app-body {
     position: relative !important;
     display: block !important;
     overflow: hidden !important;
+    padding-bottom: calc(3.5rem + env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .rail-panel,
@@ -1175,12 +1232,11 @@ body {
     inset: 0 !important;
     width: 100% !important;
     height: 100% !important;
-    max-width: 100% !important;     /* override desktop max-width constraint */
+    max-width: 100% !important;
     transition: transform 0.3s var(--ease-standard);
     flex-shrink: unset !important;
   }
 
-  /* Slide panels based on tab */
   .app-body[data-tab="files"]   .rail-panel    { transform: translateX(0); }
   .app-body[data-tab="files"]   .editor-panel  { transform: translateX(100%); }
   .app-body[data-tab="files"]   .preview-panel { transform: translateX(200%); }
@@ -1193,11 +1249,15 @@ body {
   .app-body[data-tab="preview"] .editor-panel  { transform: translateX(-100%); }
   .app-body[data-tab="preview"] .preview-panel { transform: translateX(0); }
 
-  /* Hide desktop drag handles */
   .drag-handle { display: none !important; }
 }
 
-/* ─── MOBILE NAV BAR ──────────────────────────────────────────────────────── */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .mobile-nav {
   display: none;
 }
@@ -1209,6 +1269,12 @@ body {
     background: var(--ink-raised);
     border-top: 1px solid var(--rule-emphasis);
     height: 3.5rem;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 

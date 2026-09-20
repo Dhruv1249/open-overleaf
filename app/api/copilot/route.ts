@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireSession } from "@/lib/session";
-import crypto from "crypto";
+import { getEffectiveMCPToken } from "@/lib/mcp-auth";
 
 export interface CopilotRequestPayload {
   prompt: string;
@@ -51,7 +51,7 @@ const functionDeclarations = [
   },
   {
     name: "read_project_file",
-    description: "Reads a .tex or text file from an open-overleaf project in GitHub.",
+    description: "Reads a .tex or text file from an open-overleaf project in the local git repository.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -75,7 +75,7 @@ const functionDeclarations = [
   },
   {
     name: "delete_file",
-    description: "Deletes a specific file or folder inside a target project on GitHub. Requires user approval.",
+    description: "Deletes a specific file or folder inside a target project in the local git repository. Requires user approval.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -87,7 +87,7 @@ const functionDeclarations = [
   },
   {
     name: "compile_project",
-    description: "Triggers LaTeX compilation for an open-overleaf project on the backend, fetching fresh files from GitHub.",
+    description: "Triggers LaTeX compilation for an open-overleaf project on the backend using the local project working tree.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -185,7 +185,7 @@ const functionDeclarations = [
   },
   {
     name: "get_file_history",
-    description: "Gets commit history (list of SHAs and commit messages) for a specific file in a project from GitHub.",
+    description: "Gets commit history (list of SHAs and commit messages) for a specific file in a project in the local git repository.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -198,7 +198,7 @@ const functionDeclarations = [
   },
   {
     name: "get_file_at_revision",
-    description: "Retrieves the content of a file at a specific Git commit SHA from GitHub.",
+    description: "Retrieves the content of a file at a specific Git commit SHA from the local git repository.",
     parameters: {
       type: "OBJECT",
       properties: {
@@ -262,24 +262,6 @@ const functionDeclarations = [
     }
   }
 ];
-
-/**
- * Computes or retrieves the active MCP authentication token.
- */
-function getEffectiveMCPToken(): string {
-  if (process.env.OVERLEAF_MCP_TOKEN) {
-    return process.env.OVERLEAF_MCP_TOKEN;
-  }
-  const secretString = process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET || "open_overleaf_mcp_secret";
-  let ghTokenHash = process.env.GITHUB_TOKEN_HASH || "";
-  if (!ghTokenHash) {
-    const rawSecret = process.env.GITHUB_CLIENT_SECRET || "default_gh_token";
-    ghTokenHash = crypto.createHash("sha256").update(rawSecret).digest("hex");
-  }
-  const repoName = process.env.GITHUB_SINGLE_REPO_NAME || "overleaf-projects";
-  const rawCombined = `${secretString}:${ghTokenHash}:${repoName}`;
-  return crypto.createHash("sha256").update(rawCombined).digest("hex");
-}
 
 /**
  * Invokes a tool on the local MCP server running on HTTP port 3202.
@@ -389,47 +371,19 @@ function parseLaxJson(str: string): any {
   return JSON.parse(fixed);
 }
 
-/**
- * Sanitizes objects for logging by redacting tokens and truncating large base64 buffers.
- */
-function sanitizeForLog(obj: any): any {
-  if (!obj || typeof obj !== "object") return obj;
-  if (Array.isArray(obj)) return obj.map(sanitizeForLog);
-  const copy: Record<string, any> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (k.toLowerCase().includes("token") || k.toLowerCase().includes("secret") || k.toLowerCase().includes("auth")) {
-      copy[k] = "[REDACTED]";
-    } else if (k === "base64Data" && typeof v === "string") {
-      copy[k] = `[base64 image: ${Math.round(v.length / 1024)} KB]`;
-    } else if (typeof v === "string" && v.length > 500) {
-      copy[k] = `${v.slice(0, 200)}... [truncated ${v.length} chars]`;
-    } else if (typeof v === "object" && v !== null) {
-      copy[k] = sanitizeForLog(v);
-    } else {
-      copy[k] = v;
-    }
-  }
-  return copy;
-}
-
-const defaultModelsCascade = [
-  "gemini-3.5-flash-lite",
-  "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite"
-];
-
 function getModelsCascade(): string[] {
   const envModels = process.env.GEMINI_MODELS || process.env.GEMINI_MODEL;
-  if (envModels) {
-    const parsed = envModels
-      .split(",")
-      .map((model) => model.trim())
-      .filter(Boolean);
-    if (parsed.length > 0) {
-      return parsed;
-    }
+  if (!envModels) {
+    throw new Error("GEMINI_MODELS env var is not set");
   }
-  return defaultModelsCascade;
+  const parsed = envModels
+    .split(",")
+    .map((model) => model.trim())
+    .filter(Boolean);
+  if (parsed.length === 0) {
+    throw new Error("GEMINI_MODELS env var is set but contains no valid model names");
+  }
+  return parsed;
 }
 
 /**
@@ -518,7 +472,8 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     const warningCountNumber = payload.warningCount || 0;
     const projectName = payload.projectName || "";
 
-    console.log("Copilot call: prompt =", userPromptText, "project =", projectName, "file =", activeFilePath || "(none)");
+    const truncatedPrompt = userPromptText.length > 150 ? `${userPromptText.slice(0, 150)}…` : userPromptText;
+    console.log(`Copilot call: prompt = "${truncatedPrompt}" project = ${projectName} file = ${activeFilePath || "(none)"}`);
 
     const geminiApiKeyString = payload.apiKey || process.env.GEMINI_API_KEY || "";
     if (!geminiApiKeyString) {
@@ -815,7 +770,7 @@ CRITICAL GUIDELINES:
                     }
 
                     if (!toolResult) {
-                      console.log("[Copilot API] Executing tool:", toolName, "args:", JSON.stringify(sanitizeForLog(finalArgs)));
+                      console.log("[Copilot API] Executing tool:", toolName, "arg keys:", Object.keys(finalArgs || {}));
                       toolResult = await callLocalMCPTool(toolName, finalArgs);
                       if (requiresApproval && approvalRecord?.details) {
                         toolResult = {
@@ -823,7 +778,7 @@ CRITICAL GUIDELINES:
                           reviewDetails: approvalRecord.details,
                         };
                       }
-                      console.log("[Copilot API] Tool execution succeeded:", toolName, "result:", JSON.stringify(sanitizeForLog(toolResult)));
+                      console.log("[Copilot API] Tool execution succeeded:", toolName);
                       sendChunk({ type: "tool_result", id: callId, name: toolName, success: true, result: toolResult, arguments: toolArgs });
                     }
                   } catch (err: any) {
@@ -887,14 +842,14 @@ CRITICAL GUIDELINES:
                 }
                 rawCandidateText = lines.join("\n").trim();
               }
-              console.log("[Copilot API] Gemini raw candidate text:", rawCandidateText);
+              console.log(`[Copilot API] Gemini raw candidate text: ${rawCandidateText.length} chars`);
 
               let parsedJsonResponse: any = null;
               let parseError: any = null;
 
               try {
                 parsedJsonResponse = parseLaxJson(rawCandidateText);
-                console.log("[Copilot API] Parsed JSON response successfully:", JSON.stringify(parsedJsonResponse));
+                console.log(`[Copilot API] Parsed JSON response successfully (keys: ${Object.keys(parsedJsonResponse || {}).join(", ")})`);
               } catch (err: any) {
                 parseError = err;
                 const startIdx = rawCandidateText.indexOf("{");
@@ -904,7 +859,7 @@ CRITICAL GUIDELINES:
                     const innerJsonStr = rawCandidateText.slice(startIdx, endIdx + 1);
                     parsedJsonResponse = parseLaxJson(innerJsonStr);
                     parseError = null;
-                    console.log("[Copilot API] Extracted and parsed inner JSON block successfully:", JSON.stringify(parsedJsonResponse));
+                    console.log(`[Copilot API] Extracted and parsed inner JSON block successfully (keys: ${Object.keys(parsedJsonResponse || {}).join(", ")})`);
                   } catch (e2: any) {
                     parseError = e2;
                     console.warn("[Copilot API] Failed to parse extracted inner JSON block:", e2.message);

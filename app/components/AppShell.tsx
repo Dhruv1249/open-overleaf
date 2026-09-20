@@ -140,6 +140,7 @@ function PdfPanel({
   width,
   settings,
   onSettingsChange,
+  isVisibleOnTablet,
 }: {
   project: string | null;
   mainFile: string | null;
@@ -153,6 +154,7 @@ function PdfPanel({
   width: number;
   settings: typeof DEFAULT_SETTINGS;
   onSettingsChange: (s: typeof DEFAULT_SETTINGS) => void;
+  isVisibleOnTablet?: boolean;
 }) {
   const relMf = mainFile ? ((project && mainFile.startsWith(`${project}/`)) ? mainFile.slice(project.length + 1) : mainFile) : null;
   const targetFile = (settings.compileTarget === "root" && settings.rootFile) ? settings.rootFile : relMf;
@@ -163,7 +165,42 @@ function PdfPanel({
 
   const spinning = compileState === "syncing" || compileState === "compiling";
 
-  // ── Google Drive state ───────────────────────────────────────────────────
+  const [pdfBlobUrl, setPdfBlobUrl] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!pdfSrc || !project || !targetFile) {
+      setPdfBlobUrl(null);
+      return;
+    }
+    const isMobile = typeof window !== "undefined" && (/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768);
+    if (!isMobile) {
+      setPdfBlobUrl(null);
+      return;
+    }
+    let active = true;
+    const fetchUrl = `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}`;
+    fetch(fetchUrl)
+      .then((res) => {
+        if (!res.ok) throw new Error("Failed fetching PDF blob");
+        return res.blob();
+      })
+      .then((blob) => {
+        if (!active) return;
+        const objectUrl = URL.createObjectURL(blob);
+        setPdfBlobUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return objectUrl;
+        });
+      })
+      .catch(() => {
+        if (active) setPdfBlobUrl(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [pdfSrc, project, targetFile, pdfKey]);
+
   const [driveConnected, setDriveConnected] = React.useState(false);
   const [driveSyncing,   setDriveSyncing]   = React.useState(false);
   const [driveLink,      setDriveLink]      = React.useState<string | null>(null);
@@ -228,7 +265,7 @@ function PdfPanel({
   }, []);
 
   return (
-    <aside className="preview-panel" aria-label="PDF preview" style={{ width, flexShrink: 0 }}>
+    <aside className={`preview-panel${isVisibleOnTablet ? " panel-visible" : ""}`} aria-label="PDF preview" style={{ width, flexShrink: 0 }}>
       {/* Header */}
       <div className="panel-header" style={{ gap: 8, flexWrap: "nowrap", padding: "0 14px", minHeight: 55 }}>
         <span className="panel-header-label">PDF Preview</span>
@@ -399,7 +436,7 @@ function PdfPanel({
         {pdfKey > 0 && pdfSrc ? (
           <iframe
             key={pdfKey}
-            src={pdfSrc}
+            src={pdfBlobUrl ? `${pdfBlobUrl}#pagemode=none&navpanes=0` : pdfSrc}
             style={{ width: "100%", flex: 1, border: "none", display: "block", minHeight: 0 }}
             title="PDF Preview"
           />
@@ -771,6 +808,7 @@ export default function AppShell() {
 
   // Mobile tab
   const [mobileTab, setMobileTab] = useState<"files"|"editor"|"preview">("editor");
+  const [showTabletPreview, setShowTabletPreview] = useState(false);
   // Version history panel
   const [showHistory,       setShowHistory]       = useState(false);
   // Copilot drawer panel
@@ -1276,6 +1314,18 @@ export default function AppShell() {
         </div>
 
         <div className="titlebar-right">
+          {project && (
+            <button
+              onClick={() => setShowTabletPreview((prev) => !prev)}
+              className="icon-btn tablet-preview-toggle"
+              title={showTabletPreview ? "Hide PDF Preview" : "Show PDF Preview"}
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                <circle cx="12" cy="12" r="3" />
+              </svg>
+            </button>
+          )}
           <ThemeToggle />
           <UserStatus />
         </div>
@@ -1529,6 +1579,7 @@ export default function AppShell() {
           width={previewWidth}
           settings={compilerSettings}
           onSettingsChange={setCompilerSettings}
+          isVisibleOnTablet={showTabletPreview}
         />
 
         {/* ── Version history overlay — covers full body for wide diff view ── */}
@@ -1586,8 +1637,6 @@ export default function AppShell() {
           Preview
         </button>
       </nav>
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

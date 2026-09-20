@@ -185,7 +185,8 @@ const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || `http://127.0.0.1:${pro
  * Core execution engine carrying out individual MCP tool logic against the local git working tree.
  */
 export async function executeMCPTool(name: string, toolArguments: Record<string, any>): Promise<any> {
-  console.log(`[MCP Server] Call received for tool: "${name}" | Args:`, JSON.stringify(toolArguments));
+  const argumentKeys = Object.keys(toolArguments || {}).join(", ");
+  console.log(`[MCP Server] Tool called: "${name}" | Args: [${argumentKeys}]`);
   try {
     const result = await executeMCPToolInner(name, toolArguments);
     console.log(`[MCP Server] Tool "${name}" execution succeeded`);
@@ -1116,7 +1117,6 @@ export async function handleHttpRequest(
   const requestUrl = request.url || "/";
   const parsedUrl = new URL(requestUrl, `http://${request.headers.host || "localhost"}`);
   const normalizedPathname = parsedUrl.pathname;
-  console.log(`[MCP Server HTTP] Request: ${request.method} ${normalizedPathname}`);
 
   try {
     const authorizationHeader = (request.headers["authorization"] || "").trim();

@@ -1,29 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getEffectiveMCPToken } from "@/lib/mcp-auth";
 import crypto from "crypto";
 
 const INTERNAL_MCP_URL = `http://127.0.0.1:${process.env.MCP_PORT || "3202"}`;
-
-function getEffectiveMCPToken(): string {
-  if (process.env.OVERLEAF_MCP_TOKEN) {
-    return process.env.OVERLEAF_MCP_TOKEN;
-  }
-
-  const secretString = process.env.OVERLEAF_MCP_SECRET || process.env.SESSION_SECRET;
-  if (!secretString) {
-    return "";
-  }
-
-  let ghTokenHash = process.env.GITHUB_TOKEN_HASH || "";
-  if (!ghTokenHash) {
-    const rawSecret = process.env.GITHUB_CLIENT_SECRET || "";
-    if (rawSecret) {
-      ghTokenHash = crypto.createHash("sha256").update(rawSecret).digest("hex");
-    }
-  }
-  const repoName = process.env.GITHUB_SINGLE_REPO_NAME || "overleaf-projects";
-  const rawCombined = `${secretString}:${ghTokenHash}:${repoName}`;
-  return crypto.createHash("sha256").update(rawCombined).digest("hex");
-}
 
 export async function POST(req: NextRequest) {
   try {
