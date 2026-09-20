@@ -10,8 +10,11 @@ services:
       - "3202:3202"
     env_file:
       - .env.local
+    environment:
+      - DEPLOY_KEY_PATH=/run/secrets/deploy_key
     volumes:
       - open_overleaf_projects:/app/projects
+      - /opt/open-overleaf-secrets/deploy_key:/run/secrets/deploy_key:ro
     restart: unless-stopped
     ulimits:
       nofile:
