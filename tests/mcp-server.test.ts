@@ -250,6 +250,10 @@ describe("Open-Overleaf MCP Tool Operations Without Remote GitHub Token", () => 
     process.env.OVERLEAF_MCP_TOKEN = testAuthenticationToken;
     process.env.PROJECTS_DIR = temporaryTestProjectsDirectory;
     fs.mkdirSync(temporaryTestProjectsDirectory, { recursive: true });
+    const { execSync } = await import("node:child_process");
+    execSync("git init -b main", { cwd: temporaryTestProjectsDirectory });
+    execSync("git config user.name 'Test User'", { cwd: temporaryTestProjectsDirectory });
+    execSync("git config user.email 'test@example.com'", { cwd: temporaryTestProjectsDirectory });
 
     activeHttpServer = http.createServer((incomingRequest, outgoingResponse) => {
       handleHttpRequest(incomingRequest, outgoingResponse);
@@ -490,6 +494,7 @@ describe("Open-Overleaf MCP Tool Operations Without Remote GitHub Token", () => 
     assert.strictEqual(parsedHistory.success, true);
     assert.ok(Array.isArray(parsedHistory.result.commits));
 
+    const targetSha = parsedHistory.result.commits[0]?.sha || "HEAD";
     const revisionResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
       method: "POST",
       headers: {
@@ -501,7 +506,7 @@ describe("Open-Overleaf MCP Tool Operations Without Remote GitHub Token", () => 
         arguments: {
           projectName: "test-proj",
           filePath: "main.tex",
-          sha: "dummy-sha",
+          sha: targetSha,
         },
       }),
     });

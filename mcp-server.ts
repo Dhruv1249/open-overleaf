@@ -94,16 +94,24 @@ async function commitPullAndPush(commitMessage: string): Promise<void> {
       ["commit", "-m", commitMessage, "--author", `${GIT_AUTHOR_NAME} <${GIT_AUTHOR_EMAIL}>`],
       { cwd: repoDir, env: sshEnv }
     );
-    await execFileAsync(
-      "git",
-      ["pull", "--rebase", "origin", DEFAULT_BRANCH],
-      { cwd: repoDir, env: sshEnv }
-    );
-    await execFileAsync(
-      "git",
-      ["push", "origin", DEFAULT_BRANCH],
-      { cwd: repoDir, env: sshEnv }
-    );
+    try {
+      await execFileAsync(
+        "git",
+        ["pull", "--rebase", "origin", DEFAULT_BRANCH],
+        { cwd: repoDir, env: sshEnv }
+      );
+      await execFileAsync(
+        "git",
+        ["push", "origin", DEFAULT_BRANCH],
+        { cwd: repoDir, env: sshEnv }
+      );
+    } catch (remoteError: any) {
+      if (process.env.NODE_ENV === "test" || !process.env.GITHUB_CLIENT_SECRET) {
+        console.warn(`[MCP Git] Remote sync skipped: ${remoteError.message}`);
+      } else {
+        throw remoteError;
+      }
+    }
     console.log(`[MCP Git] Committed and pushed: ${commitMessage}`);
   });
   return gitOperationQueue;
@@ -180,6 +188,21 @@ function listLocalFilesRecursively(absoluteDir: string, relativeBase: string): L
 }
 
 const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || `http://127.0.0.1:${process.env.PORT || "8080"}`;
+
+function buildInternalHeaders(): Record<string, string> {
+  let activeToken = "";
+  try {
+    activeToken = getEffectiveMCPToken();
+  } catch {
+    activeToken = process.env.SESSION_SECRET || "";
+  }
+  return {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${activeToken}`,
+    "x-internal-mcp": "true",
+    "x-internal-token": activeToken,
+  };
+}
 
 /*
  * Core execution engine carrying out individual MCP tool logic against the local git working tree.
@@ -507,7 +530,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     const mainFile = String(toolArguments?.mainFile || "main.tex");
     const response = await fetch(`${INTERNAL_APP_URL}/api/drive/sync`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: buildInternalHeaders(),
       body: JSON.stringify({ project: projectName, mainFile }),
     });
     const data = await response.json().catch(() => ({}));
@@ -530,7 +553,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     try {
       const response = await fetch(`${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: buildInternalHeaders(),
         body: JSON.stringify({ mainFile: entryFilename, engine: engineName }),
       });
       result = await response.json().catch(() => ({}));
@@ -572,7 +595,8 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
     let compileResult: any = null;
 
     let pdfResponse = await fetch(
-      `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`
+      `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`,
+      { headers: buildInternalHeaders() }
     );
 
     if (!pdfResponse.ok) {
@@ -580,13 +604,14 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
         `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildInternalHeaders(),
           body: JSON.stringify({ mainFile: texName }),
         }
       ).then((r) => r.json().catch(() => ({})));
 
       pdfResponse = await fetch(
-        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`
+        `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/pdf?mainFile=${encodeURIComponent(texName)}`,
+        { headers: buildInternalHeaders() }
       );
     }
 
@@ -629,7 +654,7 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
         `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: buildInternalHeaders(),
           body: JSON.stringify({ mainFile: texName }),
         }
       ).then((r) => r.json().catch(() => ({})));
