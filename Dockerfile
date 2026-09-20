@@ -98,7 +98,8 @@ set -e\n\
 export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"\n\
 \n\
 if [ ! -d "/app/projects/.git" ]; then\n\
-  echo "[startup] Cloning ${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME}"\n\
+  echo "[startup] No git repo found, clearing /app/projects and cloning ${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME}"\n\
+  find /app/projects -mindepth 1 -delete 2>/dev/null || true\n\
   git clone --branch "${DEFAULT_BRANCH:-main}" \\\n\
     "git@github.com:${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME}.git" \\\n\
     /app/projects\n\
