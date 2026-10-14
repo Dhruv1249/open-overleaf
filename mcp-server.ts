@@ -5,6 +5,8 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import * as fs from "fs";
 import * as path from "path";
@@ -204,7 +206,60 @@ function buildInternalHeaders(): Record<string, string> {
   };
 }
 
-/*
+/**
+ * Auto-detects the active candidate project directory containing profile or application documents.
+ */
+function resolveDefaultProjectName(): string {
+  const projectsDirectory = getProjectsDir();
+  if (!fs.existsSync(projectsDirectory)) {
+    return "job_applications";
+  }
+  const discoveredProjects = fs.readdirSync(projectsDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+    .map((entry) => entry.name);
+
+  for (const candidateProject of discoveredProjects) {
+    const profileFolder = path.join(projectsDirectory, candidateProject, "profile");
+    if (fs.existsSync(profileFolder)) {
+      return candidateProject;
+    }
+  }
+
+  if (discoveredProjects.includes("job_applications")) {
+    return "job_applications";
+  }
+
+  return discoveredProjects[0] || "job_applications";
+}
+
+/**
+ * Extracts a specific section from a candidate markdown experience bank based on standard markdown headers.
+ */
+function extractMarkdownSection(fullMarkdownContent: string, sectionKey: string): string {
+  const sectionHeaderMapping: Record<string, string> = {
+    summary: "## Professional Summary",
+    skills: "## Core Skills & Technologies",
+    experiences: "## Work Experience",
+    projects: "## Technical Projects",
+    education: "## Education & Academics",
+    contact: "## Personal Information",
+    links: "## Personal Information",
+  };
+
+  const targetHeader = sectionHeaderMapping[sectionKey.toLowerCase()];
+  if (!targetHeader || !fullMarkdownContent.includes(targetHeader)) {
+    return fullMarkdownContent;
+  }
+
+  const startingIndex = fullMarkdownContent.indexOf(targetHeader);
+  const nextHeaderIndex = fullMarkdownContent.indexOf("\n## ", startingIndex + targetHeader.length);
+  if (nextHeaderIndex !== -1) {
+    return fullMarkdownContent.slice(startingIndex, nextHeaderIndex).trim();
+  }
+  return fullMarkdownContent.slice(startingIndex).trim();
+}
+
+/**
  * Core execution engine carrying out individual MCP tool logic against the local git working tree.
  */
 export async function executeMCPTool(name: string, toolArguments: Record<string, any>): Promise<any> {
@@ -242,18 +297,28 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
   }
 
   if (name === "read_project_file") {
-    const projectName = String(toolArguments?.projectName);
+    const projectName = String(toolArguments?.projectName || resolveDefaultProjectName());
     const filePath = String(toolArguments?.filePath);
     const absoluteFilePath = resolveSafePath(projectName, filePath);
     if (!fs.existsSync(absoluteFilePath)) {
-      throw new Error(`File not found: ${filePath} in project ${projectName}`);
+      const projectRoot = resolveSafePath(projectName, ".");
+      let existingFiles: string[] = [];
+      try {
+        existingFiles = listLocalFilesRecursively(projectRoot, "")
+          .slice(0, 15)
+          .map((entry) => entry.path);
+      } catch {}
+      const suggestionText = existingFiles.length > 0
+        ? ` Available files in '${projectName}': ${existingFiles.join(", ")}`
+        : "";
+      throw new Error(`File not found: ${filePath} in project ${projectName}.${suggestionText}`);
     }
     const content = fs.readFileSync(absoluteFilePath, "utf-8");
     return { content };
   }
 
   if (name === "read_file_lines") {
-    const projectName = String(toolArguments?.projectName);
+    const projectName = String(toolArguments?.projectName || resolveDefaultProjectName());
     const filePath = String(toolArguments?.filePath);
     const startLineNumber = parseInt(toolArguments?.startLine || "1", 10);
     const endLineNumber = parseInt(toolArguments?.endLine || "100", 10);
@@ -273,6 +338,106 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
       totalLines: allLines.length,
       linesContent: slicedLines.join("\n"),
     };
+  }
+
+  if (name === "get_user_profile") {
+    const requestedProject = toolArguments?.projectName ? String(toolArguments.projectName) : resolveDefaultProjectName();
+    const outputFormat = String(toolArguments?.format || "markdown").toLowerCase();
+    const targetSection = String(toolArguments?.section || "all").toLowerCase();
+
+    const jsonProfilePath = resolveSafePath(requestedProject, "profile/profile.json");
+    const markdownProfilePath = resolveSafePath(requestedProject, "profile/PROFILE.md");
+    const latexVariablesPath = resolveSafePath(requestedProject, "profile/profile_vars.tex");
+
+    let parsedCandidateProfile: any = null;
+    if (fs.existsSync(jsonProfilePath)) {
+      try {
+        parsedCandidateProfile = JSON.parse(fs.readFileSync(jsonProfilePath, "utf-8"));
+      } catch (jsonParseError: any) {
+        console.warn(`[MCP Server] Failed parsing profile.json: ${jsonParseError.message}`);
+      }
+    }
+
+    if (outputFormat === "latex") {
+      if (!fs.existsSync(latexVariablesPath)) {
+        throw new Error(`Profile LaTeX variables not found in project '${requestedProject}' at 'profile/profile_vars.tex'. Ensure candidate profile has been synchronized from Job-cruiser backend (POST /api/overleaf/sync-profile).`);
+      }
+      return {
+        projectName: requestedProject,
+        format: "latex",
+        content: fs.readFileSync(latexVariablesPath, "utf-8"),
+      };
+    }
+
+    if (outputFormat === "json") {
+      if (!parsedCandidateProfile) {
+        throw new Error(`Profile JSON not found in project '${requestedProject}' at 'profile/profile.json'. Ensure candidate profile has been synchronized from Job-cruiser backend (POST /api/overleaf/sync-profile).`);
+      }
+      if (targetSection !== "all") {
+        const sectionDataMapping: Record<string, any> = {
+          summary: parsedCandidateProfile.bio_summary || parsedCandidateProfile.summary || "",
+          skills: parsedCandidateProfile.skills || [],
+          experiences: parsedCandidateProfile.experiences || [],
+          projects: parsedCandidateProfile.projects || [],
+          education: parsedCandidateProfile.education || [],
+          contact: {
+            name: parsedCandidateProfile.name,
+            headline: parsedCandidateProfile.professional_headline,
+            email: parsedCandidateProfile.email,
+            phone: parsedCandidateProfile.phone,
+            location: parsedCandidateProfile.location,
+            country: parsedCandidateProfile.country,
+          },
+          links: {
+            linkedin: parsedCandidateProfile.linkedin_url,
+            github: parsedCandidateProfile.github_url,
+            portfolio: parsedCandidateProfile.portfolio_url,
+            customLinks: parsedCandidateProfile.custom_links,
+          },
+        };
+        const resolvedSectionData = sectionDataMapping[targetSection] ?? parsedCandidateProfile[targetSection] ?? null;
+        return {
+          projectName: requestedProject,
+          format: "json",
+          section: targetSection,
+          data: resolvedSectionData,
+        };
+      }
+      return {
+        projectName: requestedProject,
+        format: "json",
+        profile: parsedCandidateProfile,
+      };
+    }
+
+    if (fs.existsSync(markdownProfilePath)) {
+      const completeMarkdownContent = fs.readFileSync(markdownProfilePath, "utf-8");
+      if (targetSection === "all") {
+        return {
+          projectName: requestedProject,
+          format: "markdown",
+          content: completeMarkdownContent,
+        };
+      }
+      const filteredSectionMarkdown = extractMarkdownSection(completeMarkdownContent, targetSection);
+      return {
+        projectName: requestedProject,
+        format: "markdown",
+        section: targetSection,
+        content: filteredSectionMarkdown,
+      };
+    }
+
+    if (parsedCandidateProfile) {
+      return {
+        projectName: requestedProject,
+        format: "json",
+        note: "Markdown profile file not found; falling back to structured JSON profile.",
+        profile: parsedCandidateProfile,
+      };
+    }
+
+    throw new Error(`Candidate profile not found in project '${requestedProject}' (checked 'profile/PROFILE.md' and 'profile/profile.json'). Trigger a profile synchronization from Job-cruiser backend (POST /api/overleaf/sync-profile) to populate the experience bank.`);
   }
 
   if (name === "delete_file") {
@@ -812,14 +977,112 @@ async function executeMCPToolInner(name: string, toolArguments: Record<string, a
   throw new Error(`Unknown MCP tool requested: ${name}`);
 }
 
-/*
+/**
+ * Comprehensive system instructions orienting any connected AI agent with the full
+ * Job-cruiser architecture, file hierarchy, workflow conventions, and LaTeX rules out of the box.
+ */
+const OVERLEAF_SYSTEM_INSTRUCTIONS = `# Open-Overleaf MCP Server Architecture & Operation Guide
+
+You are connected to the Open-Overleaf Model Context Protocol (MCP) Server for the Job-cruiser automated job search ecosystem.
+This server provides programmatic access to the local Git working tree of LaTeX projects, TeX Live compilation engines (XeLaTeX, pdfLaTeX, LuaLaTeX), and candidate document management.
+
+## 1. System Role & Infrastructure
+- Storage Model: All user documents live in a local Git working tree mounted at /app/projects (or ./projects).
+- Compilation Engine: Native multi-engine TeX Live distribution with XeLaTeX, pdfLaTeX, and LuaLaTeX.
+- Downstream Sync: All file mutations (create, write, delete, patch, rename) automatically commit and push to the connected Git repository.
+- Human Review: The Open-Overleaf Web UI (Monaco editor + live PDF preview) acts as the human-in-the-loop review interface.
+
+## 2. Workspace Hierarchy & File Conventions
+The primary workspace directory defaults to "job_applications" unless otherwise specified.
+
+Directory Layout:
+\`\`\`
+{projectName}/ (default: "job_applications")
+├── profile/
+│   ├── PROFILE.md           <- Verified candidate experience bank in Markdown (recommended for LLM reading context)
+│   ├── profile.json         <- Complete typed candidate JSON payload (experiences, projects, skills, education)
+│   └── profile_vars.tex     <- LaTeX macro variable definitions (\\candidateName, \\candidateEmail, etc.)
+├── templates/
+│   ├── resume.tex           <- ATS-compliant single-page LaTeX resume baseline template with styling macros
+│   └── cover_letter.tex     <- Standard business cover letter LaTeX baseline template
+└── job_applications/
+    └── {company}_{role}_{date}/
+        ├── resume.tex       <- Tailored single-page resume generated for a specific job application
+        └── cover_letter.tex <- Tailored cover letter generated for the application
+\`\`\`
+
+## 3. Core Available Tools & Best Practices
+- get_user_profile:
+  - ALWAYS call this tool first before generating or modifying resumes or cover letters.
+  - Supports format="markdown" (full experience bank), format="json" (raw data), or format="latex" (macros).
+  - Supports section filtering ("summary", "skills", "experiences", "projects", "education", "contact") to conserve context tokens.
+  - projectName is optional and will be auto-resolved if omitted.
+- read_project_file & read_file_lines:
+  - Use read_project_file to inspect templates (e.g., templates/resume.tex).
+  - Use read_file_lines for large files or targeted inspection to avoid token bloat.
+- write_project_file vs apply_patch:
+  - Use write_project_file when generating a brand-new tailored resume in job_applications/{company}_{role}_{date}/resume.tex.
+  - Use apply_patch for surgical edits and bug fixes to existing documents. This avoids rewriting whole files and minimizes Git index churn.
+- compile_project:
+  - Compiles the target LaTeX document. Default engine is "xelatex".
+  - Always specify entryFile (e.g., entryFile="job_applications/stripe_swe_2026-10-14/resume.tex").
+  - Returns pageCount, diagnostics, errors, and outputLog.
+- get_compilation_log:
+  - If compile_project fails, immediately read the compilation log using get_compilation_log to extract exact error lines.
+- validate_tex:
+  - Runs chktex syntax linter on a LaTeX file to detect formatting warnings, unmatched brackets, or unescaped characters before compilation.
+- get_project_pdf & get_project_preview_image:
+  - Retrieves the binary artifact as base64-encoded PDF or page PNG image for rendering.
+- sync_to_drive:
+  - Uploads the compiled PDF to Google Drive and returns a stable webViewLink.
+
+## 4. Cardinal Rules for Resume Tailoring
+1. Strict 1-Page Constraint:
+   - Resumes MUST compile to exactly one page (pageCount == 1). Two-page resumes violate the standard ATS criteria for this ecosystem.
+   - If pageCount > 1: tighten vertical spacing (e.g., \\vspace{-2pt}), reduce top/bottom margins slightly, shorten bullet points, or omit the least relevant project/experience.
+2. 100% Truthfulness (Anti-Hallucination):
+   - Never invent employment history, degrees, grades, tech stacks, or company names.
+   - All factual content must be sourced strictly from get_user_profile.
+   - Tailoring means reordering, highlighting relevant keywords from the job description, and selecting the most impactful truthful achievements.
+3. Preserve Template Macros & Structure:
+   - Respect the layout and macro commands defined in templates/resume.tex (e.g., \\resumeSubheading, \\resumeItem, \\resumeProjectHeading).
+   - Do NOT redefine or strip core preamble packages unless resolving a specific package conflict.
+4. LaTeX Character Escaping:
+   - Always escape LaTeX special characters within dynamic text:
+     - & -> \\&
+     - % -> \\%
+     - $ -> \\$
+     - # -> \\#
+     - _ -> \\_
+     - { -> \\{
+     - } -> \\}
+     - ~ -> \\textasciitilde{}
+     - ^ -> \\textasciicircum{}
+
+## 5. Standard Step-by-Step Tailoring Procedure
+Step 1: Retrieve candidate background using get_user_profile(format="markdown").
+Step 2: Read template macros using read_project_file(projectName="job_applications", filePath="templates/resume.tex").
+Step 3: Analyze the target Job Description to identify top required skills, domain knowledge, and responsibilities.
+Step 4: Draft tailored LaTeX matching the template styling and macros, populating it with candidate experience directly relevant to the JD.
+Step 5: Write the file to job_applications/{company}_{sanitizedRole}_{date}/resume.tex via write_project_file.
+Step 6: Trigger compilation via compile_project(projectName="job_applications", engine="xelatex", entryFile="job_applications/{company}_{sanitizedRole}_{date}/resume.tex").
+Step 7: Inspect compileResult.pageCount. If > 1, adjust spacing and recompile until pageCount is 1. If errors occur, inspect get_compilation_log and fix via apply_patch.
+`;
+
+/**
  * Initializes and configures the Model Context Protocol Server with LaTeX management tools.
  * All tools operate on the local git working tree — no GitHub API calls or tokens required.
  */
 export function createMCPServer(): Server {
   const serverInstance = new Server(
-    { name: "open-overleaf-mcp-server", version: "2.0.0" },
-    { capabilities: { tools: {} } }
+    { name: "open-overleaf-mcp-server", version: "2.1.0" },
+    {
+      capabilities: {
+        tools: {},
+        prompts: {},
+      },
+      instructions: OVERLEAF_SYSTEM_INSTRUCTIONS,
+    }
   );
 
   serverInstance.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -1093,8 +1356,259 @@ export function createMCPServer(): Server {
             required: ["projectName", "filePath"],
           },
         },
+        {
+          name: "get_user_profile",
+          description: "Retrieves the candidate's complete professional profile, master experience bank, skills, work history, projects, and contact information. Always call this tool first before tailoring resumes or cover letters to ensure 100% factual truthfulness.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectName: {
+                type: "string",
+                description: "Name of the project directory (optional, defaults to 'job_applications' or auto-detected candidate project)",
+                default: "job_applications",
+              },
+              format: {
+                type: "string",
+                enum: ["markdown", "json", "latex"],
+                description: "Output format: 'markdown' (recommended for LLM reading context), 'json' (structured typed candidate data), or 'latex' (macro variables)",
+                default: "markdown",
+              },
+              section: {
+                type: "string",
+                enum: ["all", "summary", "skills", "experiences", "projects", "education", "contact", "links"],
+                description: "Optional section filter to minimize context window consumption",
+                default: "all",
+              },
+            },
+          },
+        },
       ],
     };
+  });
+
+  serverInstance.setRequestHandler(ListPromptsRequestSchema, async () => {
+    return {
+      prompts: [
+        {
+          name: "tailor_resume",
+          description: "Step-by-step guided prompt to tailor a 1-page ATS LaTeX resume against a target job description.",
+          arguments: [
+            { name: "companyName", description: "Target company name", required: true },
+            { name: "jobTitle", description: "Target job title", required: true },
+            { name: "jobDescription", description: "Target job description or requirements", required: true },
+            { name: "projectName", description: "Project directory name (default: job_applications)", required: false },
+          ],
+        },
+        {
+          name: "tailor_cover_letter",
+          description: "Step-by-step guided prompt to generate a tailored LaTeX cover letter.",
+          arguments: [
+            { name: "companyName", description: "Target company name", required: true },
+            { name: "jobTitle", description: "Target job title", required: true },
+            { name: "jobDescription", description: "Target job description or requirements", required: true },
+            { name: "hiringManager", description: "Name of hiring manager or team", required: false },
+            { name: "projectName", description: "Project directory name (default: job_applications)", required: false },
+          ],
+        },
+        {
+          name: "fix_compilation_error",
+          description: "Guided prompt to inspect LaTeX compilation logs, run syntax diagnostics, and patch compilation errors.",
+          arguments: [
+            { name: "projectName", description: "Project directory name (default: job_applications)", required: true },
+            { name: "entryFile", description: "Target tex file path that failed compilation", required: true },
+            { name: "errorLog", description: "Compilation log snippet or error message", required: false },
+          ],
+        },
+        {
+          name: "review_candidate_profile",
+          description: "Inspects and reviews the candidate's complete background, experience bank, and skills.",
+          arguments: [
+            { name: "projectName", description: "Project directory name (default: job_applications)", required: false },
+            { name: "targetRole", description: "Target career role to evaluate profile alignment against", required: false },
+          ],
+        },
+      ],
+    };
+  });
+
+  serverInstance.setRequestHandler(GetPromptRequestSchema, async (request) => {
+    const { name, arguments: promptArgs } = request.params;
+
+    if (name === "tailor_resume") {
+      const company = promptArgs?.companyName || "Target Company";
+      const role = promptArgs?.jobTitle || "Target Role";
+      const jd = promptArgs?.jobDescription || "";
+      const project = promptArgs?.projectName || "job_applications";
+
+      return {
+        description: `Tailoring resume for ${role} at ${company}`,
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are an expert LaTeX resume engineer and career strategist. Your goal is to generate an ATS-compliant, strictly 1-page LaTeX resume tailored for the position of "${role}" at "${company}".
+
+TARGET JOB DETAILS:
+- Company: ${company}
+- Role: ${role}
+- Project: ${project}
+- Job Description:
+${jd}
+
+EXECUTION INSTRUCTIONS:
+1. Retrieve Candidate Profile:
+   Call get_user_profile(projectName="${project}", format="markdown") to read the candidate's complete verified background.
+   CRITICAL: Never invent experience, metrics, or degrees. All factual accomplishments must derive from this profile.
+
+2. Inspect Baseline Template:
+   Call read_project_file(projectName="${project}", filePath="templates/resume.tex") to inspect formatting macros, packages, and layout geometry.
+
+3. Align & Tailor Content:
+   - Identify top hard skills, libraries, domain keywords, and responsibilities emphasized in the JD.
+   - Select the candidate's strongest matching experiences and technical projects.
+   - Reorder and emphasize bullet points to highlight direct relevance to the JD requirements.
+   - Escape all LaTeX special characters (\\%, \\&, \\_, \\$, \\#, \\textasciitilde{}, etc.).
+
+4. Write Tailored Document:
+   Construct the full LaTeX document preserving the template preamble, and call write_project_file(projectName="${project}", filePath="job_applications/${company.toLowerCase()}_${role.toLowerCase().replace(/\\s+/g, '_')}/resume.tex", content=...).
+
+5. Compile & Verify 1-Page Constraint:
+   Call compile_project(projectName="${project}", engine="xelatex", entryFile="job_applications/${company.toLowerCase()}_${role.toLowerCase().replace(/\\s+/g, '_')}/resume.tex").
+   - If compileResult.pageCount > 1: tighten vertical spacing (\\vspace{-2pt}), reduce margins slightly, or condense bullet points until pageCount is exactly 1.
+   - If compilation fails: call get_compilation_log to inspect error lines, and use apply_patch to fix syntax errors.
+
+Begin by calling get_user_profile now.`,
+            },
+          },
+        ],
+      };
+    }
+
+    if (name === "tailor_cover_letter") {
+      const company = promptArgs?.companyName || "Target Company";
+      const role = promptArgs?.jobTitle || "Target Role";
+      const jd = promptArgs?.jobDescription || "";
+      const hiringManager = promptArgs?.hiringManager || "Hiring Team";
+      const project = promptArgs?.projectName || "job_applications";
+
+      return {
+        description: `Tailoring cover letter for ${role} at ${company}`,
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are an expert executive cover letter writer. Your goal is to draft a personalized, compelling 3-4 paragraph LaTeX cover letter for "${role}" at "${company}".
+
+TARGET JOB DETAILS:
+- Company: ${company}
+- Role: ${role}
+- Hiring Manager/Team: ${hiringManager}
+- Project: ${project}
+- Job Description:
+${jd}
+
+EXECUTION INSTRUCTIONS:
+1. Retrieve Candidate Profile:
+   Call get_user_profile(projectName="${project}", format="markdown") to understand the candidate's core background, recent achievements, and career narrative.
+
+2. Inspect Cover Letter Template:
+   Call read_project_file(projectName="${project}", filePath="templates/cover_letter.tex") to review letterhead styling and contact macro definitions.
+
+3. Structure the Letter:
+   - Opening Paragraph: Express direct enthusiasm for the ${role} role at ${company}. Reference what excites the candidate about the company's product or mission.
+   - Middle 1-2 Paragraphs: Highlight 2 specific past achievements from the candidate profile that directly solve problems or fulfill technical requirements mentioned in the JD.
+   - Closing Paragraph: Reiterate enthusiasm, state availability for interviews, and provide a polite sign-off.
+   - Maintain professional, authentic tone. Avoid generic buzzwords.
+
+4. Write & Compile:
+   Call write_project_file to save the document at "job_applications/${company.toLowerCase()}_${role.toLowerCase().replace(/\\s+/g, '_')}/cover_letter.tex", then call compile_project with engine="xelatex".
+
+Begin by calling get_user_profile now.`,
+            },
+          },
+        ],
+      };
+    }
+
+    if (name === "fix_compilation_error") {
+      const project = promptArgs?.projectName || "job_applications";
+      const entryFile = promptArgs?.entryFile || "resume.tex";
+      const errorLog = promptArgs?.errorLog || "";
+
+      return {
+        description: `Diagnosing and repairing LaTeX compilation error for ${entryFile}`,
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are an expert LaTeX compiler and debugging specialist. The document "${entryFile}" in project "${project}" failed to compile.
+
+Provided Error Information:
+${errorLog || "No snippet provided. Please fetch from compilation log."}
+
+EXECUTION INSTRUCTIONS:
+1. Retrieve Compilation Log:
+   Call get_compilation_log(projectName="${project}") to inspect the exact failure line number and error message.
+
+2. Inspect Source Lines:
+   Call read_file_lines(projectName="${project}", filePath="${entryFile}", startLine=1, endLine=100) around the reported error line.
+
+3. Run Syntax Diagnostics:
+   Call validate_tex(projectName="${project}", filePath="${entryFile}") to check for chktex syntax warnings, unmatched delimiters, or unescaped characters.
+
+4. Diagnose Common LaTeX Issues:
+   - Unescaped special characters: %, &, _, $, #, ~, ^
+   - Missing closing braces or brackets: { } [ ]
+   - Unmatched environments: \\begin{...} without corresponding \\end{...}
+   - Undefined control sequence (missing package or misspelled macro)
+   - Paragraph ended before \\... was complete (blank line inside macro argument)
+
+5. Apply Surgical Fix:
+   Call apply_patch with targeted line replacements. Do NOT overwrite the entire file with write_project_file if a localized patch suffices.
+
+6. Recompile & Verify:
+   Call compile_project(projectName="${project}", engine="xelatex", entryFile="${entryFile}") to ensure compilation succeeds with zero errors.
+
+Begin by inspecting the compilation log or file lines now.`,
+            },
+          },
+        ],
+      };
+    }
+
+    if (name === "review_candidate_profile") {
+      const project = promptArgs?.projectName || "job_applications";
+      const targetRole = promptArgs?.targetRole || "";
+
+      return {
+        description: `Reviewing candidate profile in ${project}`,
+        messages: [
+          {
+            role: "user",
+            content: {
+              type: "text",
+              text: `You are a principal technical recruiter and career coach. Review the candidate's experience bank in project "${project}"${targetRole ? ` against the target role of "${targetRole}"` : ""}.
+
+EXECUTION INSTRUCTIONS:
+1. Call get_user_profile(projectName="${project}", format="markdown") to retrieve the candidate experience bank.
+2. Evaluate:
+   - Depth and breadth of Core Skills & Tech Stack.
+   - Impact metrics and quantifiable results in Work Experience bullets (e.g. latency, throughput, scale, revenue).
+   - Technical Projects complexity, live deployment status, and source code availability.
+   - Any skill or narrative gaps${targetRole ? ` when aiming for ${targetRole}` : ""}.
+3. Provide a structured, actionable critique with recommendations for bullet rephrasing and template optimization.
+
+Begin by calling get_user_profile now.`,
+            },
+          },
+        ],
+      };
+    }
+
+    throw new Error(`Unknown MCP prompt requested: ${name}`);
   });
 
   serverInstance.setRequestHandler(CallToolRequestSchema, async (request) => {

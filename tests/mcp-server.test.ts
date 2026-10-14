@@ -112,6 +112,51 @@ describe("Open-Overleaf MCP Server Transports & Authentication", () => {
     await activeMcpClient.close();
   });
 
+  test("supports modern Streamable HTTP client listing and fetching prompts", async () => {
+    const streamableClientTransport = new StreamableHTTPClientTransport(
+      new URL(`http://localhost:${testPortNumber}/sse`),
+      {
+        requestInit: {
+          headers: {
+            Authorization: `Bearer ${testAuthenticationToken}`,
+          },
+        },
+      }
+    );
+
+    const activeMcpClient = new Client({
+      name: "streamable-prompts-client",
+      version: "1.0.0",
+    });
+
+    await activeMcpClient.connect(streamableClientTransport);
+    const retrievedPromptsResult = await activeMcpClient.listPrompts();
+
+    assert.ok(Array.isArray(retrievedPromptsResult.prompts));
+    const promptNameSet = new Set(retrievedPromptsResult.prompts.map((singlePrompt) => singlePrompt.name));
+    assert.ok(promptNameSet.has("tailor_resume"));
+    assert.ok(promptNameSet.has("tailor_cover_letter"));
+    assert.ok(promptNameSet.has("fix_compilation_error"));
+    assert.ok(promptNameSet.has("review_candidate_profile"));
+
+    const tailorPrompt = await activeMcpClient.getPrompt({
+      name: "tailor_resume",
+      arguments: {
+        companyName: "Acme Corp",
+        jobTitle: "Senior Distributed Systems Engineer",
+        jobDescription: "Must know Go, Kubernetes, and PostgreSQL.",
+      },
+    });
+
+    assert.ok(tailorPrompt.messages.length > 0);
+    const promptMessageText = tailorPrompt.messages[0].content.type === "text" ? tailorPrompt.messages[0].content.text : "";
+    assert.ok(promptMessageText.includes("Acme Corp"));
+    assert.ok(promptMessageText.includes("get_user_profile"));
+    assert.ok(promptMessageText.includes("1-page"));
+
+    await activeMcpClient.close();
+  });
+
   test("supports legacy SSE client transport connection and tool listing", async () => {
     const legacySseClientTransport = new SSEClientTransport(
       new URL(`http://localhost:${testPortNumber}/sse`),
@@ -539,6 +584,145 @@ describe("Open-Overleaf MCP Tool Operations Without Remote GitHub Token", () => 
 
     const deletedFilePath = path.join(temporaryTestProjectsDirectory, "test-proj", "docs", "overview.tex");
     assert.ok(!fs.existsSync(deletedFilePath));
+  });
+
+  test("get_user_profile returns markdown, json, and latex formats with section filtering", async () => {
+    const profileDir = path.join(temporaryTestProjectsDirectory, "test-proj", "profile");
+    fs.mkdirSync(profileDir, { recursive: true });
+
+    const sampleMarkdown = `# Candidate Profile & Experience Bank
+
+## Personal Information
+- **Name**: Jane Doe | **Email**: jane@example.com
+
+## Professional Summary
+Experienced systems engineer specializing in high-throughput backend services.
+
+## Core Skills & Technologies
+Go, PostgreSQL, Docker, Kubernetes, TypeScript
+
+## Work Experience
+### Staff Engineer — Tech Corp
+- Built real-time indexing pipeline processing 50k events/sec
+`;
+
+    const sampleJSON = {
+      name: "Jane Doe",
+      email: "jane@example.com",
+      bio_summary: "Experienced systems engineer specializing in high-throughput backend services.",
+      skills: ["Go", "PostgreSQL", "Docker", "Kubernetes", "TypeScript"],
+      experiences: [
+        {
+          company: "Tech Corp",
+          role: "Staff Engineer",
+          highlights: "Built real-time indexing pipeline processing 50k events/sec",
+        },
+      ],
+    };
+
+    const sampleLaTeX = `\\newcommand{\\candidateName}{Jane Doe}\n\\newcommand{\\candidateEmail}{jane@example.com}\n`;
+
+    fs.writeFileSync(path.join(profileDir, "PROFILE.md"), sampleMarkdown, "utf-8");
+    fs.writeFileSync(path.join(profileDir, "profile.json"), JSON.stringify(sampleJSON, null, 2), "utf-8");
+    fs.writeFileSync(path.join(profileDir, "profile_vars.tex"), sampleLaTeX, "utf-8");
+
+    const markdownResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "get_user_profile",
+        arguments: {
+          projectName: "test-proj",
+          format: "markdown",
+          section: "all",
+        },
+      }),
+    });
+    assert.strictEqual(markdownResponse.status, 200);
+    const parsedMarkdown = await markdownResponse.json();
+    assert.strictEqual(parsedMarkdown.success, true);
+    assert.ok(parsedMarkdown.result.content.includes("Jane Doe"));
+    assert.ok(parsedMarkdown.result.content.includes("Core Skills & Technologies"));
+
+    const skillsSectionResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "get_user_profile",
+        arguments: {
+          projectName: "test-proj",
+          format: "markdown",
+          section: "skills",
+        },
+      }),
+    });
+    assert.strictEqual(skillsSectionResponse.status, 200);
+    const parsedSkills = await skillsSectionResponse.json();
+    assert.strictEqual(parsedSkills.success, true);
+    assert.ok(parsedSkills.result.content.includes("Go, PostgreSQL"));
+
+    const jsonResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "get_user_profile",
+        arguments: {
+          projectName: "test-proj",
+          format: "json",
+          section: "skills",
+        },
+      }),
+    });
+    assert.strictEqual(jsonResponse.status, 200);
+    const parsedJson = await jsonResponse.json();
+    assert.strictEqual(parsedJson.success, true);
+    assert.deepStrictEqual(parsedJson.result.data, ["Go", "PostgreSQL", "Docker", "Kubernetes", "TypeScript"]);
+
+    const latexResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "get_user_profile",
+        arguments: {
+          projectName: "test-proj",
+          format: "latex",
+        },
+      }),
+    });
+    assert.strictEqual(latexResponse.status, 200);
+    const parsedLatex = await latexResponse.json();
+    assert.strictEqual(parsedLatex.success, true);
+    assert.ok(parsedLatex.result.content.includes("\\newcommand{\\candidateName}{Jane Doe}"));
+
+    const autoResolvedProjectResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "get_user_profile",
+        arguments: {
+          format: "markdown",
+        },
+      }),
+    });
+    assert.strictEqual(autoResolvedProjectResponse.status, 200);
+    const parsedAutoResolved = await autoResolvedProjectResponse.json();
+    assert.strictEqual(parsedAutoResolved.success, true);
+    assert.strictEqual(parsedAutoResolved.result.projectName, "test-proj");
   });
 });
 
