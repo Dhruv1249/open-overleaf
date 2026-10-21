@@ -1,6 +1,7 @@
 import { NextResponse, NextRequest } from "next/server";
 import {
   readLocalFile,
+  readLocalFileBuffer,
   writeLocalFile,
   deleteLocalPath,
   commitPullAndPush,
@@ -9,6 +10,18 @@ import {
 import { requireSession } from "@/lib/session";
 import fs from "fs";
 import path from "path";
+
+const MIME_MAP: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".svg": "image/svg+xml",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".ico": "image/x-icon",
+  ".pdf": "application/pdf",
+};
 
 export async function GET(req: NextRequest, ctx: { params: Promise<{ name: string }> }) {
   try {
@@ -23,6 +36,27 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
     }
 
     const absolutePath = resolveSafeProjectPath(project, filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const isRaw = url.searchParams.get("raw") === "true";
+    const acceptsBinary =
+      req.headers.get("accept")?.includes("image/") ||
+      req.headers.get("accept")?.includes("application/pdf");
+
+    if (isRaw || acceptsBinary || (MIME_MAP[ext] && url.searchParams.get("json") !== "true")) {
+      const buf = readLocalFileBuffer(absolutePath);
+      if (buf === null) {
+        return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
+      }
+      const mime = MIME_MAP[ext] || "application/octet-stream";
+      return new Response(buf, {
+        headers: {
+          "Content-Type": mime,
+          "Content-Length": String(buf.length),
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+      });
+    }
+
     const content = readLocalFile(absolutePath);
     if (content === null) {
       return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });

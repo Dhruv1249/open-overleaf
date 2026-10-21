@@ -41,6 +41,20 @@ export const promptDefinitions = [
       { name: "targetRole", description: "Target career role to evaluate profile alignment against", required: false },
     ],
   },
+  {
+    name: "system_instructions",
+    description: "Comprehensive guide and best-practice rules for AI agents using the Open-Overleaf MCP tool suite.",
+    arguments: [],
+  },
+  {
+    name: "latex_architect",
+    description: "Guided prompt to architect, modularize, and typeset production LaTeX documents.",
+    arguments: [
+      { name: "projectName", description: "Name of the LaTeX project", required: true },
+      { name: "documentType", description: "Document type (e.g. report, paper, book, resume, thesis)", required: true },
+      { name: "topic", description: "Topic or objective of the document", required: true },
+    ],
+  },
 ];
 
 export function handleGetPrompt(name: string, promptArgs?: Record<string, any>) {
@@ -212,6 +226,72 @@ EXECUTION INSTRUCTIONS:
 3. Provide a structured, actionable critique with recommendations for bullet rephrasing and template optimization.
 
 Begin by calling get_user_profile now.`,
+          },
+        },
+      ],
+    };
+  }
+
+  if (name === "system_instructions") {
+    return {
+      description: "Authoritative instructions and tool usage guide for Open-Overleaf MCP suite",
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `You are connected to the Open-Overleaf LaTeX MCP server.
+
+CORE CAPABILITIES & RECOMMENDED TOOLS:
+1. Targeted Editing:
+   - Prefer edit_project_file(projectName, filePath, target, replacement) for modifying sentences, macros, or config values. Avoid full-file rewrites.
+2. Scaffolding & Batch Operations:
+   - Use batch_write_files(projectName, files: [{path, content}]) to scaffold modular LaTeX projects in a single commit.
+3. Fast Diagram Iteration:
+   - Use preview_tikz(snippet, libraries, dpi) to test and iterate on TikZ graphics in < 1 second without full document re-compilation.
+4. Binary Assets:
+   - Use upload_project_asset(projectName, targetPath, sourceFilePath or base64Content) to push graphics and screenshots.
+5. Compilation & Diagnostics:
+   - Call compile_project(projectName, engine, entryFile, maxRuns=3). It converges references automatically and returns structured errors & warnings.
+   - If compile fails due to stale .aux/.toc files, call clean_build_artifacts(projectName).
+6. Safe Refactors:
+   - Call create_checkpoint(projectName, description) before making sweeping edits. Roll back anytime via rollback_to_checkpoint.
+7. Environment Query:
+   - Use get_compiler_environment(queryFont, checkPackage) to verify font and package availability on the host before importing new LaTeX packages.`,
+          },
+        },
+      ],
+    };
+  }
+
+  if (name === "latex_architect") {
+    const project = promptArgs?.projectName || "report";
+    const docType = promptArgs?.documentType || "report";
+    const topic = promptArgs?.topic || "Technical Overview";
+
+    return {
+      description: `Architecting modular LaTeX document for ${docType} on ${topic}`,
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `You are a principal LaTeX document architect. Your goal is to design and scaffold a modular, clean, beautifully formatted LaTeX ${docType} on the topic of "${topic}" in project "${project}".
+
+EXECUTION INSTRUCTIONS:
+1. Inspect Available Compiler Environment:
+   Call get_compiler_environment to verify available LaTeX engines and fonts.
+2. Create Checkpoint:
+   Call create_checkpoint(projectName="${project}", description="Before scaffolding ${docType}") to enable instant rollbacks.
+3. Scaffold Modular Structure:
+   Call batch_write_files with:
+   - main.tex (preamble, packages, document structure, \\input statements)
+   - styles/${docType}_style.sty (geometry, typography, colors, header/footer styling)
+   - sections/01_introduction.tex, sections/02_background.tex, etc.
+4. Verify Compilation:
+   Call compile_project(projectName="${project}", engine="xelatex", entryFile="main.tex", maxRuns=2).
+5. Inspect Preview:
+   Call get_project_preview_image(projectName="${project}", pageNumber=1, saveToFile="/tmp/${project}_p1.png").`,
           },
         },
       ],

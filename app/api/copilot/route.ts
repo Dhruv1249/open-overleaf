@@ -87,13 +87,15 @@ const functionDeclarations = [
   },
   {
     name: "compile_project",
-    description: "Triggers LaTeX compilation for an open-overleaf project on the backend using the local project working tree.",
+    description: "Triggers LaTeX compilation for an open-overleaf project with automatic reference convergence and structured error diagnostics.",
     parameters: {
       type: "OBJECT",
       properties: {
         projectName: { type: "STRING", description: "Name of the LaTeX project" },
         engine: { type: "STRING", description: "Compilation engine: xelatex, pdflatex, lualatex" },
-        entryFile: { type: "STRING", description: "Target tex file to compile" }
+        entryFile: { type: "STRING", description: "Target tex file to compile" },
+        maxRuns: { type: "INTEGER", description: "Maximum compilation passes for cross-reference convergence (1-4, default: 3)" },
+        includeFullLog: { type: "BOOLEAN", description: "Include complete raw transcript log (default: false)" }
       },
       required: ["projectName"]
     }
@@ -237,14 +239,25 @@ const functionDeclarations = [
   },
   {
     name: "get_project_preview_image",
-    description: "Renders a specified PDF page to PNG preview image and returns image data for visual inspection of the compiled PDF layout and formatting.",
+    description: "Renders a specified PDF page to PNG preview image, optionally saving to local disk or applying a bounding-box crop for visual inspection.",
     parameters: {
       type: "OBJECT",
       properties: {
         projectName: { type: "STRING", description: "Name of the LaTeX project" },
         pdfName: { type: "STRING", description: "PDF filename, defaults to main.pdf" },
         pageNumber: { type: "INTEGER", description: "Page number to render, defaults to 1" },
-        dpi: { type: "INTEGER", description: "Image resolution DPI, defaults to 150" }
+        dpi: { type: "INTEGER", description: "Image resolution DPI, defaults to 150" },
+        saveToFile: { type: "STRING", description: "Local file path to save PNG directly, avoiding large JSON base64 payloads" },
+        crop: {
+          type: "OBJECT",
+          properties: {
+            width: { type: "INTEGER", description: "Crop width in pixels" },
+            height: { type: "INTEGER", description: "Crop height in pixels" },
+            x: { type: "INTEGER", description: "Crop X offset in pixels" },
+            y: { type: "INTEGER", description: "Crop Y offset in pixels" }
+          },
+          required: ["width", "height", "x", "y"]
+        }
       },
       required: ["projectName"]
     }
@@ -259,6 +272,158 @@ const functionDeclarations = [
         pdfName: { type: "STRING", description: "PDF filename to retrieve, defaults to main.pdf" }
       },
       required: ["projectName"]
+    }
+  },
+  {
+    name: "edit_project_file",
+    description: "Performs targeted search-and-replace of a text snippet within an existing project file without rewriting the entire file.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        filePath: { type: "STRING", description: "Relative file path inside the project" },
+        target: { type: "STRING", description: "Exact text snippet or substring to find and replace" },
+        replacement: { type: "STRING", description: "New text string to replace the target with" },
+        replaceAll: { type: "BOOLEAN", description: "Whether to replace all occurrences or just the first occurrence (default: false)" }
+      },
+      required: ["projectName", "filePath", "target", "replacement"]
+    }
+  },
+  {
+    name: "batch_write_files",
+    description: "Writes or creates multiple files across a project atomically in a single Git commit.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        files: {
+          type: "ARRAY",
+          items: {
+            type: "OBJECT",
+            properties: {
+              path: { type: "STRING", description: "Relative file path inside project" },
+              content: { type: "STRING", description: "Full file content" }
+            },
+            required: ["path", "content"]
+          },
+          description: "Array of files to write"
+        },
+        commitMessage: { type: "STRING", description: "Custom Git commit message" }
+      },
+      required: ["projectName", "files"]
+    }
+  },
+  {
+    name: "clean_build_artifacts",
+    description: "Removes temporary LaTeX auxiliary build artifacts (.aux, .toc, .log, .out, .fls, etc.) from project and compilation cache.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        removePdf: { type: "BOOLEAN", description: "Also remove compiled .pdf artifact to force clean recompile from scratch (default: false)" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "preview_tikz",
+    description: "Renders an isolated TikZ diagram or snippet standalone in sub-second time and returns image preview without compiling full document.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        snippet: { type: "STRING", description: "Raw TikZ code (e.g. \\begin{tikzpicture}...\\end{tikzpicture})" },
+        libraries: { type: "STRING", description: "Comma-separated list of tikz libraries (default: arrows.meta,calc,positioning,shapes)" },
+        engine: { type: "STRING", description: "Engine: pdflatex, xelatex, or lualatex" },
+        dpi: { type: "INTEGER", description: "Rendering resolution DPI (72-300, default: 150)" }
+      },
+      required: ["snippet"]
+    }
+  },
+  {
+    name: "export_project_pdf",
+    description: "Exports/copies the compiled PDF artifact directly to a local filesystem path without heavy base64 streaming.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        destinationPath: { type: "STRING", description: "Local destination file path (e.g. /home/dhruv/report.pdf)" },
+        pdfName: { type: "STRING", description: "Name of PDF file, defaults to main.pdf" }
+      },
+      required: ["projectName", "destinationPath"]
+    }
+  },
+  {
+    name: "upload_project_asset",
+    description: "Uploads or copies a binary graphic, image, or PDF asset directly into a project folder and commits to Git.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        targetPath: { type: "STRING", description: "Relative destination path in project (e.g. images/figure1.png)" },
+        sourceFilePath: { type: "STRING", description: "Local file path of source image to copy" },
+        base64Content: { type: "STRING", description: "Raw base64 string if supplying asset in-memory" }
+      },
+      required: ["projectName", "targetPath"]
+    }
+  },
+  {
+    name: "create_checkpoint",
+    description: "Creates a tagged Git snapshot/checkpoint of the current project state before large or risky refactors.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        description: { type: "STRING", description: "Human-readable label for the checkpoint" },
+        tag: { type: "STRING", description: "Custom tag identifier (default: auto-generated timestamp tag)" }
+      },
+      required: ["projectName", "description"]
+    }
+  },
+  {
+    name: "rollback_to_checkpoint",
+    description: "Restores the project working tree to a previously saved checkpoint tag or Git commit SHA.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        checkpointId: { type: "STRING", description: "Tag or commit SHA to restore" }
+      },
+      required: ["projectName", "checkpointId"]
+    }
+  },
+  {
+    name: "list_checkpoints",
+    description: "Lists all checkpoints, Git tags, and recent commits for a project.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Name of the LaTeX project" },
+        limit: { type: "INTEGER", description: "Maximum number of checkpoints to retrieve (1-50, default: 20)" }
+      },
+      required: ["projectName"]
+    }
+  },
+  {
+    name: "get_compiler_environment",
+    description: "Queries the backend for installed LaTeX engines (xelatex, pdflatex, lualatex), fonts via fc-list, and package availability via kpsewhich.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        queryFont: { type: "STRING", description: "Font family name to search for via fc-list" },
+        checkPackage: { type: "STRING", description: "LaTeX package name to check availability via kpsewhich" }
+      }
+    }
+  },
+  {
+    name: "get_user_profile",
+    description: "Retrieves candidate background, experience bank, and verified skills in markdown, json, or latex format.",
+    parameters: {
+      type: "OBJECT",
+      properties: {
+        projectName: { type: "STRING", description: "Project directory name" },
+        format: { type: "STRING", description: "Output format: markdown, json, or latex" },
+        section: { type: "STRING", description: "Optional section filter: summary, skills, experiences, projects, education, contact" }
+      }
     }
   }
 ];
@@ -565,17 +730,28 @@ AVAILABLE MCP TOOLS:
 - search_in_project: Searches for text patterns across project files.
 - read_project_file: Reads the complete text of an existing file.
 - read_file_lines: Reads specific line ranges [startLine, endLine] from an existing file.
-- create_file: Creates a new empty file in the project. (To add code or content to it, call apply_patch immediately after).
+- edit_project_file: Targeted search-and-replace of a text snippet within an existing file. Use this instead of rewriting full files for small edits.
+- batch_write_files: Writes or creates multiple files across a project atomically in a single Git commit. Use for scaffolding.
+- create_file: Creates a new empty file in the project.
 - apply_patch: Surgically replaces targeted lines or adds content into an existing file using diff chunks (mounted in Monaco for user hunk review).
 - rename_file: Renames or moves an existing file.
 - delete_file: Deletes an existing file from the project.
 - validate_tex: Runs chktex linter to inspect syntax and diagnostics.
+- clean_build_artifacts: Removes temporary LaTeX auxiliary files (.aux, .toc, .log, .out, etc.) to clear corrupt build states.
+- preview_tikz: Standalone sub-second compilation of isolated TikZ snippets without recompiling the full document.
 - get_file_history: Fetches git commit history for a file.
 - get_file_at_revision: Inspects file content at a specific git SHA commit.
+- create_checkpoint: Creates a tagged Git snapshot of the project before risky or complex edits.
+- rollback_to_checkpoint: Restores working tree to a previously saved checkpoint tag or SHA.
+- list_checkpoints: Lists all saved checkpoints, tags, and commits for a project.
+- upload_project_asset: Uploads or copies binary images/graphics directly into project folders.
+- export_project_pdf: Copies compiled PDF artifact directly to a local filesystem path.
+- get_compiler_environment: Queries installed engines (pdflatex, xelatex, lualatex), fonts via fc-list, and package availability via kpsewhich.
 - update_project_settings: Updates project configuration (compiler engine, main entry file).
-- compile_project: Runs LaTeX compilation and returns diagnostics and log.
+- compile_project: Runs LaTeX compilation with automatic reference convergence (maxRuns) and returns structured diagnostics.
 - get_project_pdf: Compiles (if needed) and fetches compiled PDF binary metadata + compilation logs.
-- get_project_preview_image: Compiles (if needed) and renders a PDF page to PNG for visual layout inspection + compilation logs.
+- get_project_preview_image: Compiles (if needed) and renders a PDF page to PNG with optional crop and direct file saving.
+- get_user_profile: Retrieves candidate background, experience bank, and verified skills.
 
 CRITICAL GUIDELINES:
 1. Respond directly without calling any tools if the user is greeting you (e.g. "hello", "hi"), saying hello, asking a general question, or if the request does not require filesystem or compilation actions.

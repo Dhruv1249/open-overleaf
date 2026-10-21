@@ -9,6 +9,7 @@ import Editor, { parseDiff } from "./Editor";
 import VersionHistory from "./VersionHistory";
 import CopilotDrawer from "./CopilotDrawer";
 import MobilePdfViewer from "./MobilePdfViewer";
+import BinaryFileViewer, { isImageFile, isPdfFile } from "./BinaryFileViewer";
 
 // ── Google Drive icon (coloured SVG) ─────────────────────────────────────────────────────
 function DriveIcon({ color, size = 14 }: { color?: string; size?: number }) {
@@ -1177,10 +1178,16 @@ export default function AppShell() {
       setPendingDiff(null);
     }
     setSelectedFile(filePath);
-    setFileLoading(true);
     setFileContent("");
     currentContent.current = "";
     setMobileTab("editor");   // auto-navigate to editor on mobile
+
+    if (isImageFile(filePath) || isPdfFile(filePath)) {
+      setFileLoading(false);
+      return;
+    }
+
+    setFileLoading(true);
 
     const s = settingsRef.current;
     const isRootMode = s.compileTarget === "root" && !!s.rootFile;
@@ -1215,6 +1222,7 @@ export default function AppShell() {
   // ── Save ──────────────────────────────────────────────────────────────────
   const handleSaveFile = useCallback(async (newContent: string) => {
     if (!project || !selectedFile) return;
+    if (isImageFile(selectedFile) || isPdfFile(selectedFile)) return;
     setSaveState("saving");
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(project)}/file`, {
@@ -1563,20 +1571,28 @@ export default function AppShell() {
               <p className="editor-empty-label">Loading file</p>
             </div>
           ) : selectedFile ? (
-            <Editor
-              key={`${selectedFile}-${editorRestoreKey}`}
-              content={fileContent}
-              onSave={handleSaveFile}
-              onContentChange={handleContentChange}
-              filename={filename}
-              project={project ?? undefined}
-              filePath={selectedFile ?? undefined}
-              pendingDiff={pendingDiff}
-              onAcceptDiffHunk={handleAcceptDiffHunk}
-              onRejectDiffHunk={handleRejectDiffHunk}
-              onAcceptAllDiffs={handleAcceptAllDiffs}
-              onDiscardAllDiffs={handleDiscardAllDiffs}
-            />
+            (isImageFile(selectedFile) || isPdfFile(selectedFile)) && project ? (
+              <BinaryFileViewer
+                key={selectedFile}
+                project={project}
+                filePath={selectedFile}
+              />
+            ) : (
+              <Editor
+                key={`${selectedFile}-${editorRestoreKey}`}
+                content={fileContent}
+                onSave={handleSaveFile}
+                onContentChange={handleContentChange}
+                filename={filename}
+                project={project ?? undefined}
+                filePath={selectedFile ?? undefined}
+                pendingDiff={pendingDiff}
+                onAcceptDiffHunk={handleAcceptDiffHunk}
+                onRejectDiffHunk={handleRejectDiffHunk}
+                onAcceptAllDiffs={handleAcceptAllDiffs}
+                onDiscardAllDiffs={handleDiscardAllDiffs}
+              />
+            )
           ) : (
             <div className="editor-empty" style={{ flex: 1 }}>
               <span className="serif editor-empty-glyph" style={{ fontSize: "0.9375rem", color: "var(--rule-emphasis)", fontStyle: "italic" }}>
