@@ -724,5 +724,255 @@ Go, PostgreSQL, Docker, Kubernetes, TypeScript
     assert.strictEqual(parsedAutoResolved.success, true);
     assert.strictEqual(parsedAutoResolved.result.projectName, "test-proj");
   });
+
+  test("edit_project_file performs targeted string replacement", async () => {
+    const editResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "edit_project_file",
+        arguments: {
+          projectName: "test-proj",
+          filePath: "main.tex",
+          target: "Hello Patched World",
+          replacement: "Hello Targeted Edit World",
+        },
+      }),
+    });
+
+    assert.strictEqual(editResponse.status, 200);
+    const parsedEdit = await editResponse.json();
+    assert.strictEqual(parsedEdit.success, true);
+    assert.strictEqual(parsedEdit.result.replacementsCount, 1);
+
+    const editedFilePath = path.join(temporaryTestProjectsDirectory, "test-proj", "main.tex");
+    const editedContent = fs.readFileSync(editedFilePath, "utf-8");
+    assert.ok(editedContent.includes("Hello Targeted Edit World"));
+    assert.ok(!editedContent.includes("Hello Patched World"));
+  });
+
+  test("batch_write_files creates and updates multiple files in single operation", async () => {
+    const batchResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "batch_write_files",
+        arguments: {
+          projectName: "test-proj",
+          commitMessage: "scaffold modular report",
+          files: [
+            { path: "sections/01_intro.tex", content: "\\section{Introduction}\nThis is section 1." },
+            { path: "sections/02_methods.tex", content: "\\section{Methodology}\nThis is section 2." },
+          ],
+        },
+      }),
+    });
+
+    assert.strictEqual(batchResponse.status, 200);
+    const parsedBatch = await batchResponse.json();
+    assert.strictEqual(parsedBatch.success, true);
+    assert.strictEqual(parsedBatch.result.filesWritten, 2);
+
+    const file1 = path.join(temporaryTestProjectsDirectory, "test-proj", "sections", "01_intro.tex");
+    const file2 = path.join(temporaryTestProjectsDirectory, "test-proj", "sections", "02_methods.tex");
+    assert.ok(fs.existsSync(file1));
+    assert.ok(fs.existsSync(file2));
+    assert.strictEqual(fs.readFileSync(file1, "utf-8"), "\\section{Introduction}\nThis is section 1.");
+    assert.strictEqual(fs.readFileSync(file2, "utf-8"), "\\section{Methodology}\nThis is section 2.");
+  });
+
+  test("clean_build_artifacts removes temporary TeX output files while keeping source", async () => {
+    const projDir = path.join(temporaryTestProjectsDirectory, "test-proj");
+    fs.writeFileSync(path.join(projDir, "main.aux"), "dummy aux", "utf-8");
+    fs.writeFileSync(path.join(projDir, "main.toc"), "dummy toc", "utf-8");
+    fs.writeFileSync(path.join(projDir, "main.log"), "dummy log", "utf-8");
+    fs.writeFileSync(path.join(projDir, "main.out"), "dummy out", "utf-8");
+
+    const cleanResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "clean_build_artifacts",
+        arguments: {
+          projectName: "test-proj",
+        },
+      }),
+    });
+
+    assert.strictEqual(cleanResponse.status, 200);
+    const parsedClean = await cleanResponse.json();
+    assert.strictEqual(parsedClean.success, true);
+    assert.ok(parsedClean.result.cleanedCount >= 4);
+
+    assert.ok(!fs.existsSync(path.join(projDir, "main.aux")));
+    assert.ok(!fs.existsSync(path.join(projDir, "main.toc")));
+    assert.ok(!fs.existsSync(path.join(projDir, "main.log")));
+    assert.ok(!fs.existsSync(path.join(projDir, "main.out")));
+    // source file main.tex must still exist!
+    assert.ok(fs.existsSync(path.join(projDir, "main.tex")));
+  });
+
+  test("upload_project_asset uploads base64 binary asset into project directory", async () => {
+    const dummyImageBuffer = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+    const uploadResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "upload_project_asset",
+        arguments: {
+          projectName: "test-proj",
+          targetPath: "images/test_pixel.png",
+          contentBase64: dummyImageBuffer.toString("base64"),
+        },
+      }),
+    });
+
+    assert.strictEqual(uploadResponse.status, 200);
+    const parsedUpload = await uploadResponse.json();
+    assert.strictEqual(parsedUpload.success, true);
+
+    const assetOnDisk = path.join(temporaryTestProjectsDirectory, "test-proj", "images", "test_pixel.png");
+    assert.ok(fs.existsSync(assetOnDisk));
+    assert.strictEqual(fs.readFileSync(assetOnDisk).length, dummyImageBuffer.length);
+  });
+
+  test("create_checkpoint, list_checkpoints, and rollback_to_checkpoint manage Git snapshots", async () => {
+    const checkpointTag = "chk_test_v1";
+    const createCheckpointResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "create_checkpoint",
+        arguments: {
+          projectName: "test-proj",
+          tag: checkpointTag,
+          message: "Saved before breaking changes",
+        },
+      }),
+    });
+
+    assert.strictEqual(createCheckpointResponse.status, 200);
+    const parsedCreate = await createCheckpointResponse.json();
+    assert.strictEqual(parsedCreate.success, true);
+    assert.strictEqual(parsedCreate.result.tag, checkpointTag);
+
+    const listCheckpointsResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "list_checkpoints",
+        arguments: {
+          projectName: "test-proj",
+        },
+      }),
+    });
+
+    assert.strictEqual(listCheckpointsResponse.status, 200);
+    const parsedList = await listCheckpointsResponse.json();
+    assert.strictEqual(parsedList.success, true);
+    assert.ok(parsedList.result.checkpoints.some((c: any) => c.tag === checkpointTag));
+
+    // Now modify a file
+    const mainTexPath = path.join(temporaryTestProjectsDirectory, "test-proj", "main.tex");
+    fs.writeFileSync(mainTexPath, "CORRUPTED CONTENT", "utf-8");
+
+    // Rollback to checkpoint
+    const rollbackResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "rollback_to_checkpoint",
+        arguments: {
+          projectName: "test-proj",
+          tag: checkpointTag,
+        },
+      }),
+    });
+
+    assert.strictEqual(rollbackResponse.status, 200);
+    const parsedRollback = await rollbackResponse.json();
+    assert.strictEqual(parsedRollback.success, true);
+
+    // Verify main.tex restored
+    const restoredContent = fs.readFileSync(mainTexPath, "utf-8");
+    assert.ok(restoredContent.includes("Hello Targeted Edit World"));
+    assert.ok(!restoredContent.includes("CORRUPTED CONTENT"));
+  });
+
+  test("export_project_pdf copies compiled PDF artifact directly to destination path", async () => {
+    const projDir = path.join(temporaryTestProjectsDirectory, "test-proj");
+    fs.writeFileSync(path.join(projDir, "main.pdf"), "%PDF-1.4 dummy pdf content", "utf-8");
+
+    const destinationPath = path.join(temporaryTestProjectsDirectory, "exported_output.pdf");
+
+    const exportResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "export_project_pdf",
+        arguments: {
+          projectName: "test-proj",
+          destinationLocalPath: destinationPath,
+        },
+      }),
+    });
+
+    assert.strictEqual(exportResponse.status, 200);
+    const parsedExport = await exportResponse.json();
+    assert.strictEqual(parsedExport.success, true);
+    assert.strictEqual(parsedExport.result.destinationPath, destinationPath);
+
+    assert.ok(fs.existsSync(destinationPath));
+    assert.strictEqual(fs.readFileSync(destinationPath, "utf-8"), "%PDF-1.4 dummy pdf content");
+  });
+
+  test("get_compiler_environment queries engines, fonts, and packages", async () => {
+    const envResponse = await fetch(`http://localhost:${testPortNumber}/api/mcp/tool`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testAuthenticationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        tool: "get_compiler_environment",
+        arguments: {
+          queryFont: "DejaVu",
+          checkPackage: "geometry",
+        },
+      }),
+    });
+
+    assert.strictEqual(envResponse.status, 200);
+    const parsedEnv = await envResponse.json();
+    assert.strictEqual(parsedEnv.success, true);
+    assert.ok(typeof parsedEnv.result.engines === "object");
+    assert.ok("pdflatex" in parsedEnv.result.engines);
+    assert.ok("xelatex" in parsedEnv.result.engines);
+    assert.ok("lualatex" in parsedEnv.result.engines);
+  });
 });
 

@@ -108,14 +108,36 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ name: st
     const { name: project } = await ctx.params;
     const url = new URL(req.url);
     const filePath = url.searchParams.get("path");
-    if (!filePath) {
-      return NextResponse.json({ ok: false, error: "path query required" }, { status: 400 });
+    let pathsToDelete: string[] = [];
+
+    if (filePath) {
+      pathsToDelete = [filePath];
+    } else {
+      try {
+        const body = await req.json();
+        if (Array.isArray(body?.paths)) {
+          pathsToDelete = body.paths.filter((p: unknown): p is string => typeof p === "string" && p.trim().length > 0);
+        }
+      } catch {
+        // Not a JSON body
+      }
     }
 
-    const absolutePath = resolveSafeProjectPath(project, filePath);
-    deleteLocalPath(absolutePath);
-    await commitPullAndPush(`chore: delete ${project}/${filePath}`);
-    return NextResponse.json({ ok: true });
+    if (!pathsToDelete.length) {
+      return NextResponse.json({ ok: false, error: "path query or paths array required" }, { status: 400 });
+    }
+
+    for (const p of pathsToDelete) {
+      const absolutePath = resolveSafeProjectPath(project, p);
+      deleteLocalPath(absolutePath);
+    }
+
+    const commitMsg = pathsToDelete.length === 1
+      ? `chore: delete ${project}/${pathsToDelete[0]}`
+      : `chore: delete ${pathsToDelete.length} items in ${project}`;
+
+    await commitPullAndPush(commitMsg);
+    return NextResponse.json({ ok: true, count: pathsToDelete.length });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }

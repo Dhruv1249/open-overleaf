@@ -4,11 +4,13 @@ import { useEffect, useRef, useState, useCallback } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Entry  = { name: string; path: string; type: "file" | "dir" };
-type CtxMenu = { entry: Entry; x: number; y: number } | null;
+type CtxMenu = { entry: Entry; x: number; y: number; isMulti?: boolean } | null;
 type Dialog  =
   | { type: "create"; parentPath: string; isFolder: boolean }
   | { type: "delete"; entry: Entry }
   | { type: "move";   entry: Entry }
+  | { type: "batch-delete"; paths: string[] }
+  | { type: "batch-move";   paths: string[] }
   | null;
 
 // ── VS Code–style file icons ───────────────────────────────────────────────────
@@ -147,6 +149,37 @@ function IconSpinner() {
     </svg>
   );
 }
+function IconChecklist() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.2} strokeLinecap="round">
+      <polyline points="2.5,5 4,6.5 7,3"/>
+      <path d="M8.5 4.5h5M8.5 8.5h5M8.5 12.5h5"/>
+      <polyline points="2.5,12 4,13.5 7,10"/>
+    </svg>
+  );
+}
+
+// Helper: collect flat list of visible entries in tree order for Shift+click range selection
+function getVisibleEntries(
+  roots: Entry[] | null,
+  expanded: Set<string>,
+  contents: Map<string, Entry[]>
+): Entry[] {
+  if (!roots) return [];
+  const list: Entry[] = [];
+  function traverse(entries: Entry[]) {
+    for (const entry of entries) {
+      if (entry.name === ".gitkeep") continue;
+      list.push(entry);
+      if (entry.type === "dir" && expanded.has(entry.path)) {
+        const children = contents.get(entry.path);
+        if (children) traverse(children);
+      }
+    }
+  }
+  traverse(roots);
+  return list;
+}
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 function ContextMenu({ menu, onClose, onAction }: {
@@ -174,9 +207,27 @@ function ContextMenu({ menu, onClose, onAction }: {
     </div>
   );
 
+  if (menu.isMulti) {
+    return (
+      <div className="ctx-menu" style={{ left: x, top: y }}>
+        {item("Move selected items…", "batch-move")}
+        {item("Delete selected items", "batch-delete", true)}
+        <div className="ctx-menu-sep"/>
+        {item("Clear selection (Esc)", "clear-selection")}
+      </div>
+    );
+  }
+
   return (
     <div className="ctx-menu" style={{ left: x, top: y }}>
-      {isDir && <>{item("New File",   "new-file")}{item("New Folder","new-folder")}<div className="ctx-menu-sep"/></>}
+      {isDir && (
+        <>
+          {item("New File", "new-file")}
+          {item("New Folder", "new-folder")}
+          {item("Upload to Folder…", "upload-to-folder")}
+          <div className="ctx-menu-sep"/>
+        </>
+      )}
       {isTex && <>{item("⊙ Set as root file", "set-root", false, true)}<div className="ctx-menu-sep"/></>}
       {item("Rename (F2)", "rename")}
       {!isDir && item("Move to…", "move")}
@@ -259,12 +310,15 @@ interface TreeItemProps {
   dirContents: Map<string, Entry[]>;
   loadingDirs: Set<string>;
   selectedFile: string | null;
+  selectedPaths: Set<string>;
+  selectMode: boolean;
   inlineRename: { path: string; value: string } | null;
   draggingPath: string | null;
   dragOverDir: string | null;
   hoveredPath: string | null;
   onToggleDir: (path: string) => void;
-  onSelectFile: (path: string) => void;
+  onItemClick: (e: React.MouseEvent, entry: Entry) => void;
+  onItemToggle: (path: string) => void;
   onContextMenu: (e: React.MouseEvent, entry: Entry) => void;
   onInlineRenameChange: (value: string) => void;
   onInlineRenameSubmit: () => void;
@@ -276,6 +330,8 @@ interface TreeItemProps {
   onDropToDir: (dirPath: string) => void;
   onHoverChange: (path: string | null) => void;
   onQuickCreate: (parentPath: string, isFolder: boolean) => void;
+  onFolderUpload: (dirPath: string) => void;
+  onFolderDropUpload: (dirPath: string, files: FileList) => void;
 }
 
 function TreeItem(props: TreeItemProps) {
@@ -283,18 +339,19 @@ function TreeItem(props: TreeItemProps) {
     entry, depth, project,
     rootFile,
     expandedDirs, dirContents, loadingDirs,
-    selectedFile, inlineRename,
+    selectedFile, selectedPaths, selectMode, inlineRename,
     draggingPath, dragOverDir, hoveredPath,
-    onToggleDir, onSelectFile, onContextMenu,
+    onToggleDir, onItemClick, onItemToggle, onContextMenu,
     onInlineRenameChange, onInlineRenameSubmit, onInlineRenameCancel,
     onDragStart, onDragEnd, onDragEnterDir, onDragLeaveDir, onDropToDir,
-    onHoverChange, onQuickCreate,
+    onHoverChange, onQuickCreate, onFolderUpload, onFolderDropUpload,
   } = props;
 
   const isDir      = entry.type === "dir";
   const isExpanded = expandedDirs.has(entry.path);
   const isLoading  = loadingDirs.has(entry.path);
   const isSelected = !isDir && selectedFile === entry.path;
+  const isMultiSelected = selectedPaths.has(entry.path);
   const isRenaming = inlineRename?.path === entry.path;
   const isDragging = draggingPath === entry.path;
   const isDragOver = isDir && dragOverDir === entry.path;
@@ -307,15 +364,20 @@ function TreeItem(props: TreeItemProps) {
   return (
     <>
       <div
-        className={`tree-node${isSelected ? " active" : ""}${isDragOver ? " drag-over" : ""}`}
+        className={`tree-node${isSelected ? " active" : ""}${isMultiSelected ? " multi-selected" : ""}${isDragOver ? " drag-over" : ""}`}
         style={{
           paddingLeft: indent + 4,
           opacity: isDragging ? 0.4 : 1,
-          background: isDragOver ? "rgba(200,169,110,0.12)" : undefined,
+          background: isDragOver
+            ? "rgba(200,169,110,0.12)"
+            : isMultiSelected
+            ? "rgba(200,169,110,0.18)"
+            : undefined,
+          borderLeft: isMultiSelected ? "2px solid var(--lamp)" : undefined,
           outline: isDragOver ? "1px dashed rgba(200,169,110,0.4)" : undefined,
           position: "relative",
         }}
-        onClick={() => isDir ? onToggleDir(entry.path) : onSelectFile(entry.path)}
+        onClick={(e) => onItemClick(e, entry)}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu(e, entry); }}
         onMouseEnter={() => onHoverChange(entry.path)}
         onMouseLeave={() => onHoverChange(null)}
@@ -329,10 +391,43 @@ function TreeItem(props: TreeItemProps) {
         }}
         onDragEnd={onDragEnd}
         /* Drop target (dirs only) */
-        onDragOver={(e) => { if (isDir) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; onDragEnterDir(entry.path); } }}
+        onDragOver={(e) => {
+          if (isDir) {
+            e.preventDefault();
+            const hasFiles = Array.from(e.dataTransfer.types).includes("Files");
+            e.dataTransfer.dropEffect = hasFiles ? "copy" : "move";
+            onDragEnterDir(entry.path);
+          }
+        }}
         onDragLeave={() => { if (isDir) onDragLeaveDir(); }}
-        onDrop={(e) => { e.preventDefault(); if (isDir) onDropToDir(entry.path); }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (isDir) {
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+              onFolderDropUpload(entry.path, files);
+            } else {
+              onDropToDir(entry.path);
+            }
+          }
+        }}
       >
+        {/* Multi-select checkbox when active */}
+        {(selectMode || selectedPaths.size > 1) && (
+          <span
+            style={{ marginRight: 4, display: "inline-flex", alignItems: "center" }}
+            onClick={(e) => { e.stopPropagation(); onItemToggle(entry.path); }}
+          >
+            <input
+              type="checkbox"
+              checked={isMultiSelected}
+              onChange={() => onItemToggle(entry.path)}
+              style={{ accentColor: "var(--lamp)", cursor: "pointer", margin: 0, width: 13, height: 13 }}
+            />
+          </span>
+        )}
+
         {/* Chevron / spinner */}
         <span className="tree-chevron" style={{ color: "var(--quill-tertiary)" }}>
           {isDir ? (
@@ -406,6 +501,15 @@ function TreeItem(props: TreeItemProps) {
             >
               <IconNewFolder />
             </button>
+            {/* Upload directly to this folder */}
+            <button
+              title={`Upload files to ${entry.name}`}
+              className="icon-btn"
+              style={{ padding: "1px 3px", minWidth: 20 }}
+              onClick={(e) => { e.stopPropagation(); onFolderUpload(entry.path); }}
+            >
+              <IconUpload />
+            </button>
           </span>
         )}
       </div>
@@ -439,6 +543,12 @@ export default function ProjectTree({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
   const [dirContents,  setDirContents]  = useState<Map<string, Entry[]>>(new Map());
   const [loadingDirs,  setLoadingDirs]  = useState<Set<string>>(new Set());
+
+  // Multi-selection state
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [lastClickedPath, setLastClickedPath] = useState<string | null>(null);
+  const [selectMode, setSelectMode] = useState(false);
+  const folderUploadTarget = useRef<string>("");
 
   const [ctxMenu,       setCtxMenu]      = useState<CtxMenu>(null);
   const [dialog,        setDialog]       = useState<Dialog>(null);
@@ -519,14 +629,25 @@ export default function ProjectTree({
 
   // ── Context menu ───────────────────────────────────────────────────────────
   const handleContextMenu = useCallback((e: React.MouseEvent, entry: Entry) => {
-    setCtxMenu({ entry, x: e.clientX, y: e.clientY });
-  }, []);
+    const isMulti = selectedPaths.size > 1 && selectedPaths.has(entry.path);
+    setCtxMenu({ entry, x: e.clientX, y: e.clientY, isMulti });
+  }, [selectedPaths]);
 
   const handleCtxAction = useCallback((action: string) => {
     const entry = ctxMenu?.entry;
     if (!entry) return;
     setOpError(null);
-    if (action === "rename") {
+    if (action === "batch-delete") {
+      setDialog({ type: "batch-delete", paths: Array.from(selectedPaths) });
+    } else if (action === "batch-move") {
+      setInputValue("");
+      setDialog({ type: "batch-move", paths: Array.from(selectedPaths) });
+    } else if (action === "clear-selection") {
+      setSelectedPaths(new Set());
+    } else if (action === "upload-to-folder") {
+      folderUploadTarget.current = entry.path;
+      fileInputRef.current?.click();
+    } else if (action === "rename") {
       setInlineRename({ path: entry.path, value: entry.name });
     } else if (action === "new-file") {
       setInputValue(""); setDialog({ type: "create", parentPath: entry.path, isFolder: false });
@@ -542,7 +663,7 @@ export default function ProjectTree({
         : entry.path;
       onSetRootFile(rel);
     }
-  }, [ctxMenu, project, onSetRootFile]);
+  }, [ctxMenu, selectedPaths, project, onSetRootFile]);
 
   // ── File upload ──────────────────────────────────────────────────────────────
   const handleUpload = useCallback(async (fileList: FileList, targetDir = "") => {
@@ -788,12 +909,88 @@ export default function ProjectTree({
   }, [pendingMove, project, rootEntries, dirContents]);
 
 
-  // ── Select guard ───────────────────────────────────────────────────────────
+  // ── Select guard & Multi-select click handler ─────────────────────────────
   const handleSelectFile = useCallback((path: string) => {
     const all = [...(rootEntries||[]), ...Array.from(dirContents.values()).flat()];
     if (all.find((e) => e.path === path)?.type === "dir") return;
     onSelect(path);
   }, [rootEntries, dirContents, onSelect]);
+
+  const handleItemClick = useCallback((e: React.MouseEvent, entry: Entry) => {
+    const isDir = entry.type === "dir";
+
+    // Shift+Click: range selection
+    if (e.shiftKey && lastClickedPath) {
+      e.preventDefault();
+      const visible = getVisibleEntries(rootEntries, expandedDirs, dirContents);
+      const lastIdx = visible.findIndex(v => v.path === lastClickedPath);
+      const currIdx = visible.findIndex(v => v.path === entry.path);
+      if (lastIdx !== -1 && currIdx !== -1) {
+        const start = Math.min(lastIdx, currIdx);
+        const end = Math.max(lastIdx, currIdx);
+        const range = new Set(selectedPaths);
+        for (let i = start; i <= end; i++) {
+          range.add(visible[i].path);
+        }
+        setSelectedPaths(range);
+        return;
+      }
+    }
+
+    // Ctrl/Cmd+Click or Select Mode toggle
+    if (e.ctrlKey || e.metaKey || selectMode) {
+      e.preventDefault();
+      setSelectedPaths(prev => {
+        const next = new Set(prev);
+        if (next.has(entry.path)) next.delete(entry.path);
+        else next.add(entry.path);
+        return next;
+      });
+      setLastClickedPath(entry.path);
+      return;
+    }
+
+    // Normal click
+    setSelectedPaths(new Set([entry.path]));
+    setLastClickedPath(entry.path);
+
+    if (isDir) {
+      handleToggleDir(entry.path);
+    } else {
+      handleSelectFile(entry.path);
+    }
+  }, [lastClickedPath, rootEntries, expandedDirs, dirContents, selectedPaths, selectMode, handleToggleDir, handleSelectFile]);
+
+  const handleItemToggle = useCallback((path: string) => {
+    setSelectedPaths(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    setLastClickedPath(path);
+  }, []);
+
+  // Keyboard shortcut to clear selection
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && selectedPaths.size > 0) {
+        setSelectedPaths(new Set());
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectedPaths]);
+
+  // ── Folder upload triggers ────────────────────────────────────────────────
+  const handleFolderUpload = useCallback((dirPath: string) => {
+    folderUploadTarget.current = dirPath;
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFolderDropUpload = useCallback((dirPath: string, files: FileList) => {
+    handleUpload(files, dirPath);
+  }, [handleUpload]);
 
   // ── Quick create from folder hover button ─────────────────────────────────
   const handleQuickCreate = useCallback((parentPath: string, isFolder: boolean) => {
@@ -802,12 +999,67 @@ export default function ProjectTree({
     setDialog({ type: "create", parentPath, isFolder });
   }, []);
 
+  // ── Batch Delete ──────────────────────────────────────────────────────────
+  const handleBatchDelete = useCallback(async () => {
+    if (!selectedPaths.size) return;
+    setWorking(true);
+    setOpError(null);
+    try {
+      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/file`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: Array.from(selectedPaths) }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Batch delete failed");
+      setSelectedPaths(new Set());
+      setDialog(null);
+      await refreshTree();
+    } catch (e: any) {
+      setOpError(e.message);
+    } finally {
+      setWorking(false);
+    }
+  }, [selectedPaths, project, refreshTree]);
+
+  // ── Batch Move ────────────────────────────────────────────────────────────
+  const handleBatchMove = useCallback(async () => {
+    if (!selectedPaths.size) return;
+    setWorking(true);
+    setOpError(null);
+    try {
+      const targetDir = inputValue.trim().replace(/^\/|\/$/g, "");
+      const moves = Array.from(selectedPaths).map((fromPath) => {
+        const fileName = fromPath.split("/").pop() || fromPath;
+        const toPath = targetDir ? `${targetDir}/${fileName}` : fileName;
+        return { from: fromPath, to: toPath };
+      });
+
+      const res = await fetch(`/api/projects/${encodeURIComponent(project)}/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ moves }),
+      });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "Batch move failed");
+      setSelectedPaths(new Set());
+      setDialog(null);
+      await refreshTree();
+    } catch (e: any) {
+      setOpError(e.message);
+    } finally {
+      setWorking(false);
+    }
+  }, [selectedPaths, inputValue, project, refreshTree]);
+
   // ── Shared TreeItem props ──────────────────────────────────────────────────
   const sharedProps = {
-    project, rootFile, expandedDirs, dirContents, loadingDirs, selectedFile, inlineRename,
+    project, rootFile, expandedDirs, dirContents, loadingDirs, selectedFile,
+    selectedPaths, selectMode, inlineRename,
     draggingPath, dragOverDir, hoveredPath,
     onToggleDir: handleToggleDir,
-    onSelectFile: handleSelectFile,
+    onItemClick: handleItemClick,
+    onItemToggle: handleItemToggle,
     onContextMenu: handleContextMenu,
     onInlineRenameChange: (v: string) => setInlineRename((r) => r ? { ...r, value: v } : null),
     onInlineRenameSubmit: submitInlineRename,
@@ -819,6 +1071,8 @@ export default function ProjectTree({
     onDropToDir: handleDropToDir,
     onHoverChange: setHoveredPath,
     onQuickCreate: handleQuickCreate,
+    onFolderUpload: handleFolderUpload,
+    onFolderDropUpload: handleFolderDropUpload,
   };
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -839,6 +1093,17 @@ export default function ProjectTree({
           Explorer
         </span>
 
+        <button
+          className={`icon-btn${selectMode ? " active" : ""}`}
+          title={selectMode ? "Exit multi-select mode" : "Select multiple files"}
+          style={{
+            background: selectMode ? "rgba(200,169,110,0.2)" : undefined,
+            color: selectMode ? "var(--lamp)" : undefined,
+          }}
+          onClick={() => setSelectMode(m => !m)}
+        >
+          <IconChecklist/>
+        </button>
         <button className="icon-btn" title="New File"
           onClick={() => { setInputValue(""); setDialog({ type: "create", parentPath: "", isFolder: false }); }}>
           <IconNewFile/>
@@ -850,11 +1115,11 @@ export default function ProjectTree({
         {/* Separator */}
         <span style={{ width: 1, height: 12, background: "var(--rule-faint)", margin: "0 2px", display: "inline-block" }}/>
         <button className="icon-btn" title="Upload files" disabled={uploadWorking}
-          onClick={() => fileInputRef.current?.click()}>
+          onClick={() => { folderUploadTarget.current = ""; fileInputRef.current?.click(); }}>
           <IconUpload/>
         </button>
         <button className="icon-btn" title="Upload folder" disabled={uploadWorking}
-          onClick={() => folderInputRef.current?.click()}>
+          onClick={() => { folderUploadTarget.current = ""; folderInputRef.current?.click(); }}>
           <IconUploadFolder/>
         </button>
         {/* Separator */}
@@ -864,14 +1129,65 @@ export default function ProjectTree({
         </button>
       </div>
 
+      {/* ── Multi-select batch action bar ── */}
+      {selectedPaths.size > 1 && (
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "5px 10px", background: "rgba(200,169,110,0.12)",
+          borderBottom: "1px solid rgba(200,169,110,0.3)",
+          fontSize: "0.75rem", fontFamily: "var(--font-mono)", flexShrink: 0,
+        }}>
+          <span style={{ color: "var(--lamp)", fontWeight: 600 }}>
+            {selectedPaths.size} items selected
+          </span>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <button
+              className="btn-sm"
+              style={{ padding: "2px 8px", fontSize: "0.6875rem", background: "var(--lamp-dim)", color: "var(--lamp)", border: "1px solid rgba(200,169,110,0.3)" }}
+              onClick={() => {
+                setInputValue("");
+                setDialog({ type: "batch-move", paths: Array.from(selectedPaths) });
+              }}
+            >
+              Move
+            </button>
+            <button
+              className="btn-sm"
+              style={{ padding: "2px 8px", fontSize: "0.6875rem", background: "var(--ink-danger-dim)", color: "var(--ink-danger)", border: "1px solid rgba(176,82,82,0.3)" }}
+              onClick={() => {
+                setDialog({ type: "batch-delete", paths: Array.from(selectedPaths) });
+              }}
+            >
+              Delete
+            </button>
+            <button
+              className="btn-sm btn-ghost"
+              style={{ padding: "2px 6px", fontSize: "0.6875rem" }}
+              onClick={() => setSelectedPaths(new Set())}
+              title="Clear selection (Esc)"
+            >
+              ✕
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Hidden file inputs */}
       <input ref={fileInputRef} type="file" multiple style={{ display: "none" }}
-        onChange={e => { if (e.target.files) handleUpload(e.target.files); e.target.value = ""; }}
+        onChange={e => {
+          if (e.target.files) handleUpload(e.target.files, folderUploadTarget.current);
+          folderUploadTarget.current = "";
+          e.target.value = "";
+        }}
       />
       <input ref={folderInputRef} type="file" style={{ display: "none" }}
         // @ts-ignore — webkitdirectory is not in standard TS types
         webkitdirectory="true" multiple
-        onChange={e => { if (e.target.files) handleUpload(e.target.files); e.target.value = ""; }}
+        onChange={e => {
+          if (e.target.files) handleUpload(e.target.files, folderUploadTarget.current);
+          folderUploadTarget.current = "";
+          e.target.value = "";
+        }}
       />
 
       {/* ── Tree — also acts as root drop zone and OS-file drop zone ── */}
@@ -1026,6 +1342,56 @@ export default function ProjectTree({
           {opError && <div style={{ marginTop:8,fontSize: "0.8125rem",color:"var(--ink-danger)" }}>{opError}</div>}
           <ModalActions onCancel={() => setDialog(null)} onConfirm={handleMove}
             confirmLabel={working ? "Moving…" : "Move"} disabled={working || !inputValue.trim()}/>
+        </Modal>
+      )}
+
+      {/* ── Batch Delete dialog ── */}
+      {dialog?.type === "batch-delete" && (
+        <Modal title={`Delete ${dialog.paths.length} items`} onClose={() => setDialog(null)}>
+          <p style={{ fontSize: "0.875rem", color: "var(--quill-secondary)", lineHeight: 1.6 }}>
+            Permanently delete the following {dialog.paths.length} items? This cannot be undone.
+          </p>
+          <div style={{
+            maxHeight: 140, overflowY: "auto", margin: "10px 0", padding: "8px 10px",
+            background: "rgba(0,0,0,0.25)", borderRadius: "var(--r-sm)",
+            fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "var(--quill-secondary)",
+            display: "flex", flexDirection: "column", gap: 4,
+          }}>
+            {dialog.paths.map((p) => (
+              <div key={p} style={{ wordBreak: "break-all" }}>• {p}</div>
+            ))}
+          </div>
+          {opError && <div style={{ marginTop: 8, fontSize: "0.8125rem", color: "var(--ink-danger)" }}>{opError}</div>}
+          <ModalActions onCancel={() => setDialog(null)} onConfirm={handleBatchDelete}
+            confirmLabel={working ? "Deleting…" : `Delete ${dialog.paths.length} items`} danger disabled={working}/>
+        </Modal>
+      )}
+
+      {/* ── Batch Move dialog ── */}
+      {dialog?.type === "batch-move" && (
+        <Modal title={`Move ${dialog.paths.length} items`} onClose={() => setDialog(null)}>
+          <div style={{ fontSize: "0.8125rem", color: "var(--quill-tertiary)", marginBottom: 8 }}>
+            Destination folder (leave blank for project root):
+          </div>
+          <ModalInput
+            value={inputValue}
+            onChange={setInputValue}
+            placeholder="chapters or figures/subfolder"
+            onSubmit={handleBatchMove}
+          />
+          <div style={{
+            maxHeight: 120, overflowY: "auto", margin: "10px 0 0", padding: "8px 10px",
+            background: "rgba(0,0,0,0.25)", borderRadius: "var(--r-sm)",
+            fontFamily: "var(--font-mono)", fontSize: "0.75rem", color: "var(--quill-secondary)",
+            display: "flex", flexDirection: "column", gap: 4,
+          }}>
+            {dialog.paths.map((p) => (
+              <div key={p} style={{ wordBreak: "break-all" }}>• {p}</div>
+            ))}
+          </div>
+          {opError && <div style={{ marginTop: 8, fontSize: "0.8125rem", color: "var(--ink-danger)" }}>{opError}</div>}
+          <ModalActions onCancel={() => setDialog(null)} onConfirm={handleBatchMove}
+            confirmLabel={working ? "Moving…" : `Move ${dialog.paths.length} items`} disabled={working}/>
         </Modal>
       )}
 

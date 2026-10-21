@@ -1024,6 +1024,80 @@ export default function AppShell() {
     }, delay);
   }, [compile]);
 
+  // ── Real-time 1:1 sync with Docker filesystem / Git / MCP via SSE ─────────
+  useEffect(() => {
+    if (!project) return;
+    let es: EventSource | null = null;
+    let cancelled = false;
+
+    const connect = () => {
+      if (cancelled) return;
+      const url = `/api/projects/${encodeURIComponent(project)}/watch`;
+      es = new EventSource(url);
+
+      es.addEventListener("fs-change", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          const changedFiles: string[] = Array.isArray(data.files) ? data.files : [];
+
+          // 1. Immediately refresh the file tree with zero delay
+          setTreeRefreshNonce((n) => n + 1);
+          fetchProjectFiles(project);
+
+          // 2. If the active open file was modified externally, refresh editor content
+          const currentOpen = currentFile.current;
+          if (currentOpen) {
+            const relCurrent = currentOpen.startsWith(`${project}/`)
+              ? currentOpen.slice(project.length + 1)
+              : currentOpen;
+
+            const isCurrentModified = changedFiles.some((f: string) => {
+              const cleanF = f.replace(/\\/g, "/");
+              return (
+                cleanF === relCurrent ||
+                cleanF === currentOpen ||
+                cleanF.endsWith("/" + relCurrent) ||
+                relCurrent.endsWith("/" + cleanF)
+              );
+            });
+
+            if (isCurrentModified) {
+              fetch(`/api/projects/${encodeURIComponent(project)}/file?path=${encodeURIComponent(currentOpen)}`)
+                .then((r) => r.json())
+                .then((d) => {
+                  if (d.ok && typeof d.content === "string") {
+                    setFileContent(d.content);
+                    currentContent.current = d.content;
+                    const s = settingsRef.current;
+                    if (s.mode !== "manual") {
+                      scheduleAutoCompile();
+                    }
+                  }
+                })
+                .catch(() => {});
+            }
+          }
+        } catch (e) {
+          console.error("[watch] Error processing fs-change event:", e);
+        }
+      });
+
+      es.onerror = () => {
+        // EventSource automatically retries connection
+      };
+    };
+
+    connect();
+
+    return () => {
+      cancelled = true;
+      if (es) {
+        es.close();
+        es = null;
+      }
+    };
+  }, [project, fetchProjectFiles, scheduleAutoCompile]);
+
   useEffect(() => {
     if (compilerSettings.mode !== "interval") return;
     const id = setInterval(() => {
@@ -1108,8 +1182,11 @@ export default function AppShell() {
     currentContent.current = "";
     setMobileTab("editor");   // auto-navigate to editor on mobile
 
-    // Always use the opened .tex file as the compile target
-    if (filePath.endsWith(".tex")) {
+    const s = settingsRef.current;
+    const isRootMode = s.compileTarget === "root" && !!s.rootFile;
+
+    // Only update mainFile if NOT locked to a root file
+    if (filePath.endsWith(".tex") && !isRootMode) {
       setMainFile(filePath);
       currentMainFile.current = filePath;
     }
@@ -1123,9 +1200,10 @@ export default function AppShell() {
       setFileContent(content);
       currentContent.current = content;
 
-      // Auto-compile immediately on file open (if it's a .tex file)
-      if (filePath.endsWith(".tex") && project) {
-        compile(project, filePath, [{ path: filePath, content }]);
+      // Only trigger an initial compile if no PDF has ever been compiled yet
+      if (filePath.endsWith(".tex") && project && pdfKey === 0) {
+        const target = isRootMode ? s.rootFile! : filePath;
+        compile(project, target, [{ path: filePath, content }]);
       }
     } catch (e) {
       console.error(e);

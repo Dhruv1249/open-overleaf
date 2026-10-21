@@ -28,7 +28,10 @@ export async function POST(
     return NextResponse.json({ ok: false, error: `Bad form data: ${error.message}` }, { status: 400 });
   }
 
-  const targetDir = ((formData.get("targetDir") as string) ?? "").replace(/^\/|\/$/g, "");
+  let targetDir = ((formData.get("targetDir") as string) ?? "").replace(/^\/|\/$/g, "");
+  if (targetDir.startsWith(`${project}/`)) {
+    targetDir = targetDir.slice(project.length + 1);
+  }
   const files = formData.getAll("files") as File[];
 
   if (!files.length) {

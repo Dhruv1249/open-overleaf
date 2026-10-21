@@ -14,37 +14,51 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
 
     const { name: project } = await ctx.params;
     const body = await req.json();
-    const { from: fromPath, to: toPath } = body;
 
-    if (!fromPath || !toPath) {
-      return NextResponse.json({ ok: false, error: "from and to paths required" }, { status: 400 });
-    }
-    if (fromPath === toPath) {
-      return NextResponse.json({ ok: false, error: "from and to are the same" }, { status: 400 });
-    }
+    const moves: { from: string; to: string }[] = Array.isArray(body?.moves)
+      ? body.moves.filter((m: any) => m && typeof m.from === "string" && typeof m.to === "string")
+      : (body?.from && body?.to)
+      ? [{ from: body.from, to: body.to }]
+      : [];
 
-    const absoluteSourcePath = resolveSafeProjectPath(project, fromPath);
-    const absoluteDestinationPath = resolveSafeProjectPath(project, toPath);
-
-    if (!fs.existsSync(absoluteSourcePath)) {
-      return NextResponse.json({ ok: false, error: `Source not found: ${fromPath}` }, { status: 404 });
+    if (!moves.length) {
+      return NextResponse.json({ ok: false, error: "from and to paths (or moves array) required" }, { status: 400 });
     }
 
-    fs.mkdirSync(path.dirname(absoluteDestinationPath), { recursive: true });
-    fs.renameSync(absoluteSourcePath, absoluteDestinationPath);
+    let completedCount = 0;
+    for (const { from: fromPath, to: toPath } of moves) {
+      if (!fromPath || !toPath || fromPath === toPath) continue;
 
-    const compileSourcePath = path.join("/tmp/oo-compile", project, fromPath);
-    const compileDestinationPath = path.join("/tmp/oo-compile", project, toPath);
-    try {
-      if (fs.existsSync(compileSourcePath)) {
-        fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
-        fs.renameSync(compileSourcePath, compileDestinationPath);
+      const absoluteSourcePath = resolveSafeProjectPath(project, fromPath);
+      const absoluteDestinationPath = resolveSafeProjectPath(project, toPath);
+
+      if (!fs.existsSync(absoluteSourcePath)) continue;
+
+      fs.mkdirSync(path.dirname(absoluteDestinationPath), { recursive: true });
+      fs.renameSync(absoluteSourcePath, absoluteDestinationPath);
+
+      const compileSourcePath = path.join("/tmp/oo-compile", project, fromPath);
+      const compileDestinationPath = path.join("/tmp/oo-compile", project, toPath);
+      try {
+        if (fs.existsSync(compileSourcePath)) {
+          fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
+          fs.renameSync(compileSourcePath, compileDestinationPath);
+        }
+      } catch {
       }
-    } catch {
+      completedCount++;
     }
 
-    await commitPullAndPush(`refactor: rename ${project}/${fromPath} → ${toPath}`);
-    return NextResponse.json({ ok: true });
+    if (completedCount === 0) {
+      return NextResponse.json({ ok: false, error: "No files were moved" }, { status: 400 });
+    }
+
+    const commitMsg = moves.length === 1
+      ? `refactor: rename ${project}/${moves[0].from} → ${moves[0].to}`
+      : `refactor: move ${completedCount} items in ${project}`;
+
+    await commitPullAndPush(commitMsg);
+    return NextResponse.json({ ok: true, count: completedCount });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
   }
