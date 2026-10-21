@@ -8,6 +8,7 @@ import ProjectTree from "./ProjectTree";
 import Editor, { parseDiff } from "./Editor";
 import VersionHistory from "./VersionHistory";
 import CopilotDrawer from "./CopilotDrawer";
+import MobilePdfViewer from "./MobilePdfViewer";
 
 // ── Google Drive icon (coloured SVG) ─────────────────────────────────────────────────────
 function DriveIcon({ color, size = 14 }: { color?: string; size?: number }) {
@@ -159,52 +160,30 @@ function PdfPanel({
   const relMf = mainFile ? ((project && mainFile.startsWith(`${project}/`)) ? mainFile.slice(project.length + 1) : mainFile) : null;
   const targetFile = (settings.compileTarget === "root" && settings.rootFile) ? settings.rootFile : relMf;
 
-  const pdfSrc = project && targetFile && pdfKey > 0
-    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}#view=FitH&pagemode=none&navpanes=0`
+  const pdfRawUrl = project && targetFile && pdfKey > 0
+    ? `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}`
+    : null;
+
+  const pdfSrc = pdfRawUrl
+    ? `${pdfRawUrl}#view=FitH&pagemode=none&navpanes=0`
     : null;
 
   const spinning = compileState === "syncing" || compileState === "compiling";
 
-  const [pdfBlobUrl, setPdfBlobUrl] = React.useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [isMobile, setIsMobile] = React.useState(false);
 
   React.useEffect(() => {
-    setSettingsOpen(window.innerWidth > 768);
-  }, []);
-
-  React.useEffect(() => {
-    if (!pdfSrc || !project || !targetFile) {
-      setPdfBlobUrl(null);
-      return;
-    }
-    const isMobile = typeof window !== "undefined" && (/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.innerWidth <= 768);
-    if (!isMobile) {
-      setPdfBlobUrl(null);
-      return;
-    }
-    let active = true;
-    const fetchUrl = `/api/projects/${encodeURIComponent(project)}/pdf?mainFile=${encodeURIComponent(targetFile)}&t=${pdfKey}`;
-    fetch(fetchUrl)
-      .then((res) => {
-        if (!res.ok) throw new Error("Failed fetching PDF blob");
-        return res.blob();
-      })
-      .then((blob) => {
-        if (!active) return;
-        const objectUrl = URL.createObjectURL(blob);
-        setPdfBlobUrl((prev) => {
-          if (prev) URL.revokeObjectURL(prev);
-          return objectUrl;
-        });
-      })
-      .catch(() => {
-        if (active) setPdfBlobUrl(null);
-      });
-
-    return () => {
-      active = false;
+    const check = () => {
+      const isTouchMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const isNarrow = window.innerWidth <= 768;
+      setIsMobile(isTouchMobile || isNarrow);
+      setSettingsOpen(window.innerWidth > 768);
     };
-  }, [pdfSrc, project, targetFile, pdfKey]);
+    check();
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, []);
 
   const [driveConnected, setDriveConnected] = React.useState(false);
   const [driveSyncing,   setDriveSyncing]   = React.useState(false);
@@ -437,14 +416,18 @@ function PdfPanel({
 
       {/* Main area: PDF or placeholder */}
       <div style={{ flex: 1, position: "relative", minHeight: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
-        {/* PDF iframe — always mounted once we have one, so it doesn't flicker */}
+        {/* PDF viewer — canvas for mobile, native iframe for desktop */}
         {pdfKey > 0 && pdfSrc ? (
-          <iframe
-            key={pdfKey}
-            src={pdfBlobUrl ? `${pdfBlobUrl}#view=FitH&pagemode=none&navpanes=0` : pdfSrc}
-            style={{ width: "100%", flex: 1, border: "none", display: "block", minHeight: 0 }}
-            title="PDF Preview"
-          />
+          isMobile && pdfRawUrl ? (
+            <MobilePdfViewer pdfUrl={pdfRawUrl} pdfKey={pdfKey} />
+          ) : (
+            <iframe
+              key={pdfKey}
+              src={pdfSrc}
+              style={{ width: "100%", flex: 1, border: "none", display: "block", minHeight: 0 }}
+              title="PDF Preview"
+            />
+          )
         ) : (
           <div className="preview-placeholder" style={{ flex: 1 }}>
             <div style={{
