@@ -48,7 +48,7 @@ export async function GET(req: NextRequest, ctx: { params: Promise<{ name: strin
         return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
       }
       const mime = MIME_MAP[ext] || "application/octet-stream";
-      return new Response(buf, {
+      return new NextResponse(new Uint8Array(buf), {
         headers: {
           "Content-Type": mime,
           "Content-Length": String(buf.length),
