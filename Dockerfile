@@ -1,13 +1,14 @@
-FROM node:24-alpine AS builder
+FROM node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f AS builder
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 
 COPY . .
 RUN npm run build
 
-FROM node:24-bookworm-slim AS runner
+FROM node:24-bookworm-slim@sha256:91acba91b842bec0bf7ea6f5e09c644c7ccad72c4996ed9616d861d1c7cd60d4 AS runner
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
@@ -20,7 +21,9 @@ RUN if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
     fi && \
     echo "ttf-mscorefonts-installer msttcorefontdir/accepted-mscorefonts-eula select true" | debconf-set-selections
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
     perl \
@@ -43,6 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     biber \
     latexmk \
     git \
+    openssh-client \
     chktex \
     texlive-fonts-recommended \
     texlive-fonts-extra \
@@ -65,8 +69,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
-
 RUN fc-cache -fv \
     && luaotfload-tool --update \
     && mktexlsr
@@ -83,14 +85,6 @@ RUN ARCH=$(uname -m) && \
     chmod +x /usr/local/bin/texlab
 
 WORKDIR /app
-
-COPY --chown=node:node --from=builder /app/public ./public
-COPY --chown=node:node --from=builder /app/.next/standalone ./
-COPY --chown=node:node --from=builder /app/.next/static ./.next/static
-
-COPY --chown=node:node texlab-bridge.js ./
-COPY --chown=node:node mcp-server.ts ./
-COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 
 RUN mkdir -p /app/projects /tmp/oo-compile && chown -R node:node /app/projects /tmp/oo-compile && chmod 777 /tmp/oo-compile
 
@@ -119,6 +113,14 @@ node --experimental-strip-types mcp-server.ts &\n\
 exec node server.js\n' > start.sh \
     && chmod +x start.sh \
     && chown node:node start.sh
+
+COPY --chown=node:node --from=builder /app/public ./public
+COPY --chown=node:node --from=builder /app/.next/standalone ./
+COPY --chown=node:node --from=builder /app/.next/static ./.next/static
+
+COPY --chown=node:node texlab-bridge.js ./
+COPY --chown=node:node mcp-server.ts ./
+COPY --chown=node:node --from=builder /app/node_modules ./node_modules
 
 ENV PORT=8080
 ENV HOSTNAME=0.0.0.0

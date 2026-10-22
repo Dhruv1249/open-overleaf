@@ -5,6 +5,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: deploy-vm
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -22,6 +26,6 @@ jobs:
             cd ~/open-overleaf || cd /home/opc/open-overleaf || exit 1
             git fetch --all
             git reset --hard origin/main
-            docker rm -f open-overleaf || true
             docker compose down --remove-orphans
             docker compose up -d --build
+            docker image prune -f
