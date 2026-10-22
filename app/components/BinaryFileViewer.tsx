@@ -38,7 +38,6 @@ export default function BinaryFileViewer({ project, filePath }: BinaryFileViewer
   const handleZoomIn = () => setZoom((z) => Math.min(z + 25, 400));
   const handleZoomOut = () => setZoom((z) => Math.max(z - 25, 25));
   const handleZoomReset = () => setZoom(100);
-  const handleZoomFit = () => setZoom(100);
 
   const handleImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     const img = e.currentTarget;

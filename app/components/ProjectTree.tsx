@@ -341,7 +341,7 @@ function TreeItem(props: TreeItemProps) {
     expandedDirs, dirContents, loadingDirs,
     selectedFile, selectedPaths, selectMode, inlineRename,
     draggingPath, dragOverDir, hoveredPath,
-    onToggleDir, onItemClick, onItemToggle, onContextMenu,
+    onItemClick, onItemToggle, onContextMenu,
     onInlineRenameChange, onInlineRenameSubmit, onInlineRenameCancel,
     onDragStart, onDragEnd, onDragEnterDir, onDragLeaveDir, onDropToDir,
     onHoverChange, onQuickCreate, onFolderUpload, onFolderDropUpload,

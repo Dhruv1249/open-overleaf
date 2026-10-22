@@ -227,7 +227,7 @@ export async function handlePreviewTool(name: string, args: Record<string, any>)
     const texName = pdfFilename.replace(/\.pdf$/i, ".tex");
     let compileResult: any = null;
 
-    let pdfFullPath = path.join("/tmp/oo-compile", projectName, pdfFilename);
+    const pdfFullPath = path.join("/tmp/oo-compile", projectName, pdfFilename);
     if (!fs.existsSync(pdfFullPath)) {
       compileResult = await fetch(
         `${INTERNAL_APP_URL}/api/projects/${encodeURIComponent(projectName)}/compile`,

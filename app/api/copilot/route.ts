@@ -480,7 +480,7 @@ function isSimpleGreeting(prompt: string): boolean {
 function parseLaxJson(str: string): any {
   try {
     return JSON.parse(str);
-  } catch (e) {}
+  } catch {}
 
   let fixed = "";
   let inString = false;
@@ -604,7 +604,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
     const authResult = requireSession(request as unknown as Request);
     if ("error" in authResult) return authResult.error;
-    const userAccessToken = authResult.session?.access_token as string | undefined;
+    const _userAccessToken = authResult.session?.access_token as string | undefined;
 
     const payload: any = await request.json();
     if (payload.action === "approve" || payload.action === "reject") {
@@ -815,7 +815,7 @@ CRITICAL GUIDELINES:
         const sendChunk = (data: any) => {
           try {
             controller.enqueue(new TextEncoder().encode(JSON.stringify(data) + "\n"));
-          } catch (e) {}
+          } catch {}
         };
 
         try {

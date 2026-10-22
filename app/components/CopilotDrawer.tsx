@@ -205,7 +205,7 @@ export default function CopilotDrawer({
     if (saved) {
       try {
         setMessagesList(JSON.parse(saved));
-      } catch (err) {}
+      } catch {}
     }
     setHistoryLoaded(true);
   }, [projectName]);
@@ -297,7 +297,7 @@ export default function CopilotDrawer({
     for (const fName of Array.from(filesToFetch)) {
       try {
         fileContextsRecord[fName] = await getFileContent(fName);
-      } catch (err) {
+      } catch {
         fileContextsRecord[fName] = "";
       }
     }
@@ -515,7 +515,7 @@ export default function CopilotDrawer({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action, callId, details }),
       });
-    } catch (err) {}
+    } catch {}
   };
 
   const handleApproveAction = (messageId: string, customDetails?: any) => {

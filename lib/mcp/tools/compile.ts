@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-import { execFileAsync, getProjectsDir, resolveSafePath } from "../git.ts";
+import { execFileAsync, resolveSafePath } from "../git.ts";
 import type { ToolDefinition, DiagnosticItem } from "../types.ts";
 
 const INTERNAL_APP_URL = process.env.INTERNAL_APP_URL || `http://127.0.0.1:${process.env.PORT || "8080"}`;

@@ -1217,7 +1217,7 @@ export default function AppShell() {
     } finally {
       setFileLoading(false);
     }
-  }, [project, compile]);
+  }, [project, compile, pdfKey]);
 
   // ── Save ──────────────────────────────────────────────────────────────────
   const handleSaveFile = useCallback(async (newContent: string) => {

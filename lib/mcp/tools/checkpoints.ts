@@ -140,7 +140,7 @@ export async function handleCheckpointTool(name: string, args: Record<string, an
   }
 
   if (name === "list_checkpoints") {
-    const projectName = String(args?.projectName);
+    const _projectName = String(args?.projectName);
     const limit = Math.min(Math.max(parseInt(String(args?.limit || "20"), 10), 1), 50);
 
     try {

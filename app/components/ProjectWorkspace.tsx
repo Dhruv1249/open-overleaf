@@ -68,8 +68,8 @@ export default function ProjectWorkspace({ project }: { project: string }) {
   const [content, setContent] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [errors, setErrors] = useState(0);
-  const [warnings, setWarnings] = useState(1);
+  const [errors, _setErrors] = useState(0);
+  const [warnings, _setWarnings] = useState(1);
 
   const loadFile = async (path: string) => {
     setLoading(true);

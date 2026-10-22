@@ -7,12 +7,6 @@ interface MobilePdfViewerProps {
   pdfKey: number;
 }
 
-interface PageData {
-  pageNumber: number;
-  width: number;
-  height: number;
-}
-
 // Load PDF.js from local public directory with fallback to cdnjs
 function loadPdfJs(): Promise<any> {
   const win = window as any;
@@ -53,6 +47,56 @@ function loadPdfJs(): Promise<any> {
     localScript.onerror = () => tryCdn();
     document.head.appendChild(localScript);
   });
+}
+
+interface PageCanvasProps {
+  pageNum: number;
+  numPages: number;
+  onMount: (pageNum: number, canvas: HTMLCanvasElement | null) => void;
+}
+
+function PageCanvas({ pageNum, numPages, onMount }: PageCanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    onMount(pageNum, canvasRef.current);
+    return () => {
+      onMount(pageNum, null);
+    };
+  }, [pageNum, onMount]);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        position: "relative",
+      }}
+    >
+      {numPages > 1 && (
+        <div
+          style={{
+            fontSize: "0.6875rem",
+            fontFamily: "var(--font-mono, monospace)",
+            color: "var(--quill-tertiary, #6e7681)",
+            marginBottom: 4,
+          }}
+        >
+          Page {pageNum} of {numPages}
+        </div>
+      )}
+      <canvas
+        ref={canvasRef}
+        style={{
+          display: "block",
+          background: "#ffffff",
+          boxShadow: "0 2px 10px rgba(0, 0, 0, 0.35)",
+          borderRadius: 2,
+        }}
+      />
+    </div>
+  );
 }
 
 export default function MobilePdfViewer({ pdfUrl, pdfKey }: MobilePdfViewerProps) {
@@ -204,6 +248,20 @@ export default function MobilePdfViewer({ pdfUrl, pdfKey }: MobilePdfViewerProps
   const handleZoomIn = () => setScaleMultiplier((m) => Math.min(Number((m + 0.25).toFixed(2)), 3.0));
   const handleZoomOut = () => setScaleMultiplier((m) => Math.max(Number((m - 0.25).toFixed(2)), 0.5));
   const handleZoomReset = () => setScaleMultiplier(1.0);
+
+  const handlePageMount = useCallback(
+    (pageNum: number, canvas: HTMLCanvasElement | null) => {
+      if (canvas) {
+        canvasRefs.current[pageNum] = canvas;
+        if (!loading) {
+          renderPage(pageNum, canvas);
+        }
+      } else {
+        delete canvasRefs.current[pageNum];
+      }
+    },
+    [loading, renderPage]
+  );
 
   return (
     <div
@@ -379,42 +437,12 @@ export default function MobilePdfViewer({ pdfUrl, pdfKey }: MobilePdfViewerProps
 
         {!loading && !error && numPages > 0 && (
           Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
-            <div
+            <PageCanvas
               key={pageNum}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                position: "relative",
-              }}
-            >
-              {numPages > 1 && (
-                <div
-                  style={{
-                    fontSize: "0.6875rem",
-                    fontFamily: "var(--font-mono, monospace)",
-                    color: "var(--quill-tertiary, #6e7681)",
-                    marginBottom: 4,
-                  }}
-                >
-                  Page {pageNum} of {numPages}
-                </div>
-              )}
-              <canvas
-                ref={(el) => {
-                  canvasRefs.current[pageNum] = el;
-                  if (el && !loading) {
-                    renderPage(pageNum, el);
-                  }
-                }}
-                style={{
-                  display: "block",
-                  background: "#ffffff",
-                  boxShadow: "0 2px 10px rgba(0, 0, 0, 0.35)",
-                  borderRadius: 2,
-                }}
-              />
-            </div>
+              pageNum={pageNum}
+              numPages={numPages}
+              onMount={handlePageMount}
+            />
           ))
         )}
       </div>

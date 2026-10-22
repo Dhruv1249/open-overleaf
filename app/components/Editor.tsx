@@ -526,7 +526,7 @@ export function parseDiff(original: string, proposed: string): { segments: Segme
   const segments: Segment[] = [];
   const hunks: DiffHunk[] = [];
   let hunkCounter = 0;
-  let originalLine = 1;
+  let _originalLine = 1;
   let modifiedLine = 1;
 
   for (let i = 0; i < changes.length; i++) {
@@ -544,7 +544,7 @@ export function parseDiff(original: string, proposed: string): { segments: Segme
         type: "unchanged",
         lines: changeLines,
       });
-      originalLine += changeLines.length;
+      _originalLine += changeLines.length;
       modifiedLine += changeLines.length;
     } else if (change.removed) {
       const nextChange = i + 1 < changes.length ? changes[i + 1] : null;
@@ -568,7 +568,7 @@ export function parseDiff(original: string, proposed: string): { segments: Segme
           modifiedLines: nextLines,
           hunkId: id,
         });
-        originalLine += changeLines.length;
+        _originalLine += changeLines.length;
         modifiedLine += nextLines.length;
         i++;
       } else {
@@ -587,7 +587,7 @@ export function parseDiff(original: string, proposed: string): { segments: Segme
           modifiedLines: [],
           hunkId: id,
         });
-        originalLine += changeLines.length;
+        _originalLine += changeLines.length;
       }
     } else if (change.added) {
       hunkCounter++;
