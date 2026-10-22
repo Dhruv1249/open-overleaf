@@ -88,31 +88,8 @@ WORKDIR /app
 
 RUN mkdir -p /app/projects /tmp/oo-compile && chown -R node:node /app/projects /tmp/oo-compile && chmod 777 /tmp/oo-compile
 
-RUN printf '#!/bin/sh\n\
-set -e\n\
-\n\
-export GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY_PATH -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"\n\
-\n\
-if [ ! -d "/app/projects/.git" ]; then\n\
-  echo "[startup] No git repo found, clearing /app/projects and cloning ${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME}"\n\
-  find /app/projects -mindepth 1 -delete 2>/dev/null || true\n\
-  git clone --branch "${DEFAULT_BRANCH:-main}" \\\n\
-    "git@github.com:${GITHUB_SINGLE_REPO_OWNER}/${GITHUB_SINGLE_REPO_NAME}.git" \\\n\
-    /app/projects\n\
-  git -C /app/projects config user.name "${GIT_AUTHOR_NAME:-open-overleaf}"\n\
-  git -C /app/projects config user.email "${GIT_AUTHOR_EMAIL:-mcp@open-overleaf.local}"\n\
-  echo "[startup] Clone complete"\n\
-else\n\
-  echo "[startup] Pulling latest from origin/${DEFAULT_BRANCH:-main}"\n\
-  git -C /app/projects pull --rebase origin "${DEFAULT_BRANCH:-main}"\n\
-  echo "[startup] Pull complete"\n\
-fi\n\
-\n\
-node texlab-bridge.js &\n\
-node --experimental-strip-types mcp-server.ts &\n\
-exec node server.js\n' > start.sh \
-    && chmod +x start.sh \
-    && chown node:node start.sh
+COPY --chown=node:node start.sh ./start.sh
+RUN chmod +x ./start.sh
 
 COPY --chown=node:node --from=builder /app/public ./public
 COPY --chown=node:node --from=builder /app/.next/standalone ./
