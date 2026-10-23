@@ -82,11 +82,13 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
 
     if (isFolder) {
       const absoluteFolderPath = resolveSafeProjectPath(project, filePath);
-      fs.mkdirSync(absoluteFolderPath, { recursive: true });
-      const gitkeepPath = path.join(absoluteFolderPath, ".gitkeep");
-      if (!fs.existsSync(gitkeepPath)) {
-        fs.writeFileSync(gitkeepPath, "", "utf-8");
-      }
+      await commitPullAndPush(`feat: create folder ${project}/${filePath}`, () => {
+        fs.mkdirSync(absoluteFolderPath, { recursive: true });
+        const gitkeepPath = path.join(absoluteFolderPath, ".gitkeep");
+        if (!fs.existsSync(gitkeepPath)) {
+          fs.writeFileSync(gitkeepPath, "", "utf-8");
+        }
+      });
     } else {
       const absolutePath = resolveSafeProjectPath(project, filePath);
       if (fs.existsSync(absolutePath)) {
@@ -95,10 +97,11 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
           { status: 409 }
         );
       }
-      writeLocalFile(absolutePath, content);
+      await commitPullAndPush(`feat: create file ${project}/${filePath}`, () => {
+        writeLocalFile(absolutePath, content);
+      });
     }
 
-    await commitPullAndPush(`feat: create ${isFolder ? "folder" : "file"} ${project}/${filePath}`);
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
@@ -118,16 +121,16 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ name: strin
     }
 
     const absolutePath = resolveSafeProjectPath(project, filePath);
-    writeLocalFile(absolutePath, content);
-
     const compileWorkPath = path.join("/tmp/oo-compile", project, filePath);
-    try {
-      fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
-      fs.writeFileSync(compileWorkPath, content, "utf-8");
-    } catch {
-    }
 
-    await commitPullAndPush(message || `edit: ${project}/${filePath}`);
+    await commitPullAndPush(message || `edit: ${project}/${filePath}`, () => {
+      writeLocalFile(absolutePath, content);
+      try {
+        fs.mkdirSync(path.dirname(compileWorkPath), { recursive: true });
+        fs.writeFileSync(compileWorkPath, content, "utf-8");
+      } catch {}
+    });
+
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
@@ -161,16 +164,17 @@ export async function DELETE(req: NextRequest, ctx: { params: Promise<{ name: st
       return NextResponse.json({ ok: false, error: "path query or paths array required" }, { status: 400 });
     }
 
-    for (const p of pathsToDelete) {
-      const absolutePath = resolveSafeProjectPath(project, p);
-      deleteLocalPath(absolutePath);
-    }
-
     const commitMsg = pathsToDelete.length === 1
       ? `chore: delete ${project}/${pathsToDelete[0]}`
       : `chore: delete ${pathsToDelete.length} items in ${project}`;
 
-    await commitPullAndPush(commitMsg);
+    await commitPullAndPush(commitMsg, () => {
+      for (const p of pathsToDelete) {
+        const absolutePath = resolveSafeProjectPath(project, p);
+        deleteLocalPath(absolutePath);
+      }
+    });
+
     return NextResponse.json({ ok: true, count: pathsToDelete.length });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });

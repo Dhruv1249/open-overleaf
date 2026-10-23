@@ -66,39 +66,206 @@ function buildGitEnv(): NodeJS.ProcessEnv {
   };
 }
 
-/*
- * Serializes all git write operations to prevent concurrent conflicts on the working tree.
+const LOCK_DIR = "/tmp/open-overleaf-git.lock";
+const LOCK_TIMEOUT_MS = 25000;
+const LOCK_STALE_MS = 30000;
+
+let inProcessQueue: Promise<void> = Promise.resolve();
+
+/**
+ * Executes an async task holding an exclusive repository lock across all processes and threads.
+ * Prevents concurrent git mutations, index.lock conflicts, and unstaged-rebase race conditions.
  */
-let gitWriteQueue: Promise<void> = Promise.resolve();
+export async function withRepoLock<T>(fn: () => Promise<T>): Promise<T> {
+  let resolveQueue: () => void = () => {};
+  const currentQueue = inProcessQueue;
+  inProcessQueue = new Promise<void>((resolve) => {
+    resolveQueue = resolve;
+  });
+
+  try {
+    await currentQueue;
+  } catch {
+    // Prevent prior errors from poisoning future queued tasks
+  }
+
+  const startTime = Date.now();
+  let acquired = false;
+
+  while (!acquired) {
+    try {
+      fs.mkdirSync(LOCK_DIR);
+      acquired = true;
+    } catch (err: any) {
+      if (err.code === "EEXIST") {
+        try {
+          const stats = fs.statSync(LOCK_DIR);
+          if (Date.now() - stats.mtimeMs > LOCK_STALE_MS) {
+            try { fs.rmdirSync(LOCK_DIR); } catch {}
+            continue;
+          }
+        } catch {
+          continue;
+        }
+
+        if (Date.now() - startTime > LOCK_TIMEOUT_MS) {
+          console.warn("[RepoLock] Stale lock timeout exceeded, breaking lock");
+          try { fs.rmdirSync(LOCK_DIR); } catch {}
+          continue;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      } else {
+        break;
+      }
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    if (acquired) {
+      try {
+        fs.rmdirSync(LOCK_DIR);
+      } catch {}
+    }
+    resolveQueue();
+  }
+}
+
+/**
+ * Self-heals any leftover index.lock, rebase-in-progress, or merge-in-progress state.
+ */
+async function cleanStaleGitState(repoDir: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const gitDir = path.join(repoDir, ".git");
+  if (!fs.existsSync(gitDir)) return;
+
+  // Stale index.lock removal (> 3s old)
+  const indexLock = path.join(gitDir, "index.lock");
+  try {
+    if (fs.existsSync(indexLock)) {
+      const stat = fs.statSync(indexLock);
+      if (Date.now() - stat.mtimeMs > 3000) {
+        fs.unlinkSync(indexLock);
+        console.warn("[Git] Removed stale .git/index.lock");
+      }
+    }
+  } catch {}
+
+  // Abort any leftover / crashed rebase
+  const rebaseApply = path.join(gitDir, "rebase-apply");
+  const rebaseMerge = path.join(gitDir, "rebase-merge");
+  if (fs.existsSync(rebaseApply) || fs.existsSync(rebaseMerge)) {
+    console.warn("[Git] Lingering rebase state detected, aborting cleanly...");
+    try {
+      await execFileAsync("git", ["rebase", "--abort"], { cwd: repoDir, env });
+    } catch {}
+  }
+
+  // Abort any lingering merge
+  const mergeHead = path.join(gitDir, "MERGE_HEAD");
+  if (fs.existsSync(mergeHead)) {
+    try {
+      await execFileAsync("git", ["merge", "--abort"], { cwd: repoDir, env });
+    } catch {}
+  }
+}
+
+/**
+ * Safely pulls remote changes with rebase and pushes local commits.
+ * Never leaves repository in an aborted or dirty state on network/merge errors.
+ */
+async function syncRemote(repoDir: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const gitDir = path.join(repoDir, ".git");
+  if (!fs.existsSync(gitDir)) return;
+
+  try {
+    const { stdout: remotes } = await execFileAsync("git", ["remote"], { cwd: repoDir });
+    if (!remotes.split("\n").map((r) => r.trim()).includes("origin")) {
+      return;
+    }
+  } catch {
+    return;
+  }
+
+  // Guarantee clean working tree before pulling
+  try {
+    const { stdout: dirtyCheck } = await execFileAsync("git", ["status", "--porcelain"], { cwd: repoDir });
+    if (dirtyCheck.trim()) {
+      await execFileAsync("git", ["add", "-A"], { cwd: repoDir });
+      await execFileAsync(
+        "git",
+        ["commit", "-m", "chore: save working tree before sync", "--author", `${GIT_AUTHOR_NAME} <${GIT_AUTHOR_EMAIL}>`],
+        { cwd: repoDir, env }
+      );
+    }
+  } catch {}
+
+  // Pull with rebase
+  try {
+    await execFileAsync("git", ["pull", "--rebase", "origin", DEFAULT_BRANCH], {
+      cwd: repoDir,
+      env,
+      timeout: 15000,
+    });
+  } catch (pullErr: any) {
+    console.warn(`[Git] Pull --rebase skipped/failed: ${pullErr.message}`);
+    try {
+      await execFileAsync("git", ["rebase", "--abort"], { cwd: repoDir, env });
+    } catch {}
+    return;
+  }
+
+  // Push local commits to remote
+  try {
+    await execFileAsync("git", ["push", "origin", DEFAULT_BRANCH], {
+      cwd: repoDir,
+      env,
+      timeout: 15000,
+    });
+    console.log(`[Git] Synced with origin/${DEFAULT_BRANCH}`);
+  } catch (pushErr: any) {
+    console.warn(`[Git] Push failed: ${pushErr.message}`);
+  }
+}
 
 /*
- * Stages all changes, commits, pulls with rebase, then pushes.
- * If pull or push fails the error propagates — the caller receives a 500.
+ * Stages all changes, commits, and syncs with remote under an exclusive cross-process lock.
+ * If a mutation callback is provided, it is executed strictly inside the lock before staging.
  */
-export async function commitPullAndPush(commitMessage: string): Promise<void> {
-  gitWriteQueue = gitWriteQueue.then(async () => {
+export async function commitPullAndPush(
+  commitMessage: string,
+  mutation?: () => void | Promise<void>
+): Promise<void> {
+  return withRepoLock(async () => {
     const repoDir = getRepoRoot();
     const env = buildGitEnv();
 
-    await execFileAsync("git", ["add", "-A"], { cwd: repoDir });
+    // 1. Clean any stale index lock or interrupted rebase state
+    await cleanStaleGitState(repoDir, env);
 
-    const { stdout: status } = await execFileAsync("git", ["status", "--porcelain"], { cwd: repoDir });
-    if (!status.trim()) {
-      return;
+    // 2. Perform the filesystem mutation inside the lock (if provided)
+    if (mutation) {
+      await mutation();
     }
 
-    await execFileAsync(
-      "git",
-      ["commit", "-m", commitMessage, "--author", `${GIT_AUTHOR_NAME} <${GIT_AUTHOR_EMAIL}>`],
-      { cwd: repoDir, env }
-    );
+    // 3. Stage all modifications
+    await execFileAsync("git", ["add", "-A"], { cwd: repoDir });
 
-    await execFileAsync("git", ["pull", "--rebase", "origin", DEFAULT_BRANCH], { cwd: repoDir, env });
-    await execFileAsync("git", ["push", "origin", DEFAULT_BRANCH], { cwd: repoDir, env });
+    // 4. Commit if changes are present
+    const { stdout: status } = await execFileAsync("git", ["status", "--porcelain"], { cwd: repoDir });
+    if (status.trim()) {
+      await execFileAsync(
+        "git",
+        ["commit", "-m", commitMessage, "--author", `${GIT_AUTHOR_NAME} <${GIT_AUTHOR_EMAIL}>`],
+        { cwd: repoDir, env }
+      );
+      console.log(`[Git] Committed locally: ${commitMessage}`);
+    }
 
-    console.log(`[Git] Committed and pushed: ${commitMessage}`);
+    // 5. Sync to remote
+    await syncRemote(repoDir, env);
   });
-  return gitWriteQueue;
 }
 
 /*

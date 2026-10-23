@@ -42,8 +42,9 @@ export async function PUT(
   try {
     const absolutePath = resolveSafeProjectPath(project, SETTINGS_FILENAME);
     const content = JSON.stringify(body.settings, null, 2);
-    writeLocalFile(absolutePath, content);
-    await commitPullAndPush(`chore: update .overleaf.json for ${project}`);
+    await commitPullAndPush(`chore: update .overleaf.json for ${project}`, () => {
+      writeLocalFile(absolutePath, content);
+    });
     return NextResponse.json({ ok: true });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });

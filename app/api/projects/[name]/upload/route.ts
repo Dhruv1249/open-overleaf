@@ -38,6 +38,7 @@ export async function POST(
     return NextResponse.json({ ok: false, error: "No files provided" }, { status: 400 });
   }
 
+  const filesToSave: { path: string; buffer: Buffer; safePath: string }[] = [];
   const results: { path: string; ok: boolean; error?: string }[] = [];
 
   for (const file of files) {
@@ -48,23 +49,19 @@ export async function POST(
     try {
       const buffer = Buffer.from(await file.arrayBuffer());
       const absolutePath = resolveSafeProjectPath(project, projectRelativePath);
-      writeLocalFileBuffer(absolutePath, buffer);
+      filesToSave.push({ path: absolutePath, buffer, safePath });
       results.push({ path: safePath, ok: true });
     } catch (error: any) {
       results.push({ path: safePath, ok: false, error: error.message });
     }
   }
 
-  const successCount = results.filter((result) => result.ok).length;
-  if (successCount > 0) {
-    try {
-      await commitPullAndPush(`feat: upload ${successCount} file(s) to ${project}/${targetDir || ""}`);
-    } catch (pushError: any) {
-      return NextResponse.json(
-        { ok: false, error: `Files written locally but git push failed: ${pushError.message}`, results },
-        { status: 500 }
-      );
-    }
+  if (filesToSave.length > 0) {
+    await commitPullAndPush(`feat: upload ${filesToSave.length} file(s) to ${project}/${targetDir || ""}`, () => {
+      for (const item of filesToSave) {
+        writeLocalFileBuffer(item.path, item.buffer);
+      }
+    });
   }
 
   const allOk = results.every((result) => result.ok);

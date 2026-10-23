@@ -49,8 +49,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, error: `Project "${safeName}" already exists.` }, { status: 409 });
     }
 
-    fs.mkdirSync(projectPath, { recursive: true });
-
     const manifest = {
       name: safeName,
       description,
@@ -62,13 +60,14 @@ export async function POST(req: NextRequest) {
     };
 
     const manifestPath = path.join(projectPath, ".open-overleaf", "project.json");
-    fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
-    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
-
     const gitkeepPath = path.join(projectPath, ".gitkeep");
-    fs.writeFileSync(gitkeepPath, "", "utf-8");
 
-    await commitPullAndPush(`feat: create project ${safeName}`);
+    await commitPullAndPush(`feat: create project ${safeName}`, () => {
+      fs.mkdirSync(projectPath, { recursive: true });
+      fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf-8");
+      fs.writeFileSync(gitkeepPath, "", "utf-8");
+    });
 
     return NextResponse.json({ ok: true, name: safeName });
   } catch (err: any) {
@@ -88,11 +87,12 @@ export async function DELETE(req: NextRequest) {
     }
 
     const projectPath = resolveSafeProjectPath(name, "");
-    if (fs.existsSync(projectPath)) {
-      fs.rmSync(projectPath, { recursive: true, force: true });
-    }
 
-    await commitPullAndPush(`chore: delete project ${name}`);
+    await commitPullAndPush(`chore: delete project ${name}`, () => {
+      if (fs.existsSync(projectPath)) {
+        fs.rmSync(projectPath, { recursive: true, force: true });
+      }
+    });
 
     return NextResponse.json({ ok: true });
   } catch (err: any) {

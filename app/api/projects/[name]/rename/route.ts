@@ -26,38 +26,38 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ name: stri
     }
 
     let completedCount = 0;
-    for (const { from: fromPath, to: toPath } of moves) {
-      if (!fromPath || !toPath || fromPath === toPath) continue;
+    const commitMsg = moves.length === 1
+      ? `refactor: rename ${project}/${moves[0].from} → ${moves[0].to}`
+      : `refactor: move ${moves.length} items in ${project}`;
 
-      const absoluteSourcePath = resolveSafeProjectPath(project, fromPath);
-      const absoluteDestinationPath = resolveSafeProjectPath(project, toPath);
+    await commitPullAndPush(commitMsg, () => {
+      for (const { from: fromPath, to: toPath } of moves) {
+        if (!fromPath || !toPath || fromPath === toPath) continue;
 
-      if (!fs.existsSync(absoluteSourcePath)) continue;
+        const absoluteSourcePath = resolveSafeProjectPath(project, fromPath);
+        const absoluteDestinationPath = resolveSafeProjectPath(project, toPath);
 
-      fs.mkdirSync(path.dirname(absoluteDestinationPath), { recursive: true });
-      fs.renameSync(absoluteSourcePath, absoluteDestinationPath);
+        if (!fs.existsSync(absoluteSourcePath)) continue;
 
-      const compileSourcePath = path.join("/tmp/oo-compile", project, fromPath);
-      const compileDestinationPath = path.join("/tmp/oo-compile", project, toPath);
-      try {
-        if (fs.existsSync(compileSourcePath)) {
-          fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
-          fs.renameSync(compileSourcePath, compileDestinationPath);
-        }
-      } catch {
+        fs.mkdirSync(path.dirname(absoluteDestinationPath), { recursive: true });
+        fs.renameSync(absoluteSourcePath, absoluteDestinationPath);
+
+        const compileSourcePath = path.join("/tmp/oo-compile", project, fromPath);
+        const compileDestinationPath = path.join("/tmp/oo-compile", project, toPath);
+        try {
+          if (fs.existsSync(compileSourcePath)) {
+            fs.mkdirSync(path.dirname(compileDestinationPath), { recursive: true });
+            fs.renameSync(compileSourcePath, compileDestinationPath);
+          }
+        } catch {}
+        completedCount++;
       }
-      completedCount++;
-    }
+    });
 
     if (completedCount === 0) {
       return NextResponse.json({ ok: false, error: "No files were moved" }, { status: 400 });
     }
 
-    const commitMsg = moves.length === 1
-      ? `refactor: rename ${project}/${moves[0].from} → ${moves[0].to}`
-      : `refactor: move ${completedCount} items in ${project}`;
-
-    await commitPullAndPush(commitMsg);
     return NextResponse.json({ ok: true, count: completedCount });
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 });
